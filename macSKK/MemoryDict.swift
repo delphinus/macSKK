@@ -68,7 +68,7 @@ struct MemoryDict: DictProtocol, Sendable {
                 }
             } else {
                 failedEntryCount += 1
-                logger.warning("辞書 \(dictId, privacy: .public) の読み込みで \(lineNumber)行目を正常に読み込めなかったためこの行をスキップします")
+                logger.warning("辞書 \(dictId, privacy: .public) の読み込みで \(lineNumber)行目を正常に読み込めなかったためこの行をスキップします: \(line, privacy: .public)")
             }
         }
         entries = dict
