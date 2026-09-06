@@ -26,7 +26,7 @@ class RomajiTests: XCTestCase {
     }
 
     func testConvert() throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "kana-rule-for-test", withExtension: "conf")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "kana-rule-for-test", withExtension: "conf"))
         let kanaRule = try Romaji(contentsOf: fileURL, initialRomaji: nil)
         XCTAssertEqual(kanaRule.convert("a", punctuation: .default), Romaji.ConvertedMoji(input: "", kakutei: Romaji.Moji(firstRomaji: "a", kana: "あ")))
         // nだけではまだ「ん」になるかは確定しない (な行などに派生する可能性がある)

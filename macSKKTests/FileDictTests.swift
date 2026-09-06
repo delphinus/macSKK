@@ -9,14 +9,14 @@ import XCTest
     let fileURL = Bundle(for: FileDictTests.self).url(forResource: "empty", withExtension: "txt")!
 
     func testLoadContainsBom() async throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "utf8-bom", withExtension: "txt")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "utf8-bom", withExtension: "txt"))
         let dict = try FileDict(contentsOf: fileURL, type: .traditional(.utf8), readonly: true, saveToUserDict: true)
         await dict.load()
         XCTAssertEqual(dict.dict.entries, ["ゆにこーど": [Word("ユニコード")]])
     }
 
     func testLoadJson() async throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "json")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "json"))
         let dict = try FileDict(contentsOf: fileURL, type: .json, readonly: true, saveToUserDict: true)
         let dictId = dict.id
         let loadingExpectation = expectation(forNotification: notificationNameDictLoad, object: nil) { notification in
@@ -40,7 +40,7 @@ import XCTest
     }
 
     func testLoadJsonBroken() async throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "SKK-JISYO.broken", withExtension: "json")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "SKK-JISYO.broken", withExtension: "json"))
         let dict = try FileDict(contentsOf: fileURL, type: .json, readonly: true, saveToUserDict: true)
         let dictId = dict.id
         let loadingExpectation = expectation(forNotification: notificationNameDictLoad, object: nil) { notification in
@@ -60,7 +60,7 @@ import XCTest
     }
 
     func testLoadGzippedTraditional() async throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "utf8.gz")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "utf8.gz"))
         let dict = try FileDict(contentsOf: fileURL, type: .traditional(.utf8), readonly: true, saveToUserDict: true)
         let dictId = dict.id
         let loadingExpectation = expectation(forNotification: notificationNameDictLoad, object: nil) { notification in
@@ -83,7 +83,7 @@ import XCTest
     }
 
     func testLoadGzippedJson() async throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "json.gz")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "json.gz"))
         let dict = try FileDict(contentsOf: fileURL, type: .json, readonly: true, saveToUserDict: true)
         let dictId = dict.id
         let loadingExpectation = expectation(forNotification: notificationNameDictLoad, object: nil) { notification in
@@ -106,7 +106,7 @@ import XCTest
     }
 
     func testLoadSaveToUserDict() async throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "utf8")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "SKK-JISYO.test", withExtension: "utf8"))
         // saveToUserDict = false
         let dict = try FileDict(contentsOf: fileURL, type: .traditional(.utf8), readonly: true, saveToUserDict: false)
         XCTAssertFalse(dict.saveToUserDict)

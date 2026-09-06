@@ -18,7 +18,7 @@ final class EntryTests: XCTestCase {
     }
 
     func testAnnotation() throws {
-        guard let entry = Entry(line: "けい /京;10^16/", dictId: "") else { XCTFail(); return }
+        let entry = try XCTUnwrap(Entry(line: "けい /京;10^16/", dictId: ""))
         XCTAssertEqual(entry.candidates[0].word, "京")
         XCTAssertEqual(entry.candidates[0].annotation?.text, "10^16")
         XCTAssertEqual(Entry(line: "あ /亜;*個人注釈/", dictId: "")?.candidates.first?.annotation?.text, "個人注釈")
