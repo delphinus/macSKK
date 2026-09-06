@@ -6,7 +6,7 @@ import XCTest
 
 final class URLAdditionsTests: XCTestCase {
     func testIsLoadable() throws {
-        let kanaRuleFileURL = Bundle.main.url(forResource: "kana-rule", withExtension: "conf")!
+        let kanaRuleFileURL = try XCTUnwrap(Bundle.main.url(forResource: "kana-rule", withExtension: "conf"))
         XCTAssertTrue(try kanaRuleFileURL.isReadable())
         let applications = URL(fileURLWithPath: "/Applications")
         XCTAssertFalse(try applications.isReadable())

@@ -12,15 +12,12 @@ final class DateConversionTests: XCTestCase {
         XCTAssertNil(DateConversion(dict: ["format": "yyyy-MM-dd", "locale": "ja_JP", "calendar": "xxxx"])) // calendarが不正
     }
 
-    func testEncodeAndDecode() {
-        let conversion = DateConversion(dict: ["format": "yyyy-MM-dd", "locale": "ja_JP", "calendar": "gregorian"])
-        XCTAssertNotNil(conversion)
-        let encoded = conversion!.encode()
-        let decoded = DateConversion(dict: encoded)
-        XCTAssertNotNil(decoded)
-        XCTAssertEqual(decoded!.format, conversion!.format)
-        XCTAssertEqual(decoded!.locale, conversion!.locale)
-        XCTAssertEqual(decoded!.calendar, conversion!.calendar)
-        XCTAssertNotEqual(decoded!.id, conversion!.id) // idは毎回再生成されるので一致しない
+    func testEncodeAndDecode() throws {
+        let conversion = try XCTUnwrap(DateConversion(dict: ["format": "yyyy-MM-dd", "locale": "ja_JP", "calendar": "gregorian"]))
+        let decoded = try XCTUnwrap(DateConversion(dict: conversion.encode()))
+        XCTAssertEqual(decoded.format, conversion.format)
+        XCTAssertEqual(decoded.locale, conversion.locale)
+        XCTAssertEqual(decoded.calendar, conversion.calendar)
+        XCTAssertNotEqual(decoded.id, conversion.id) // idは毎回再生成されるので一致しない
     }
 }

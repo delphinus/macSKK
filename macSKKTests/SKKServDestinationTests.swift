@@ -28,18 +28,18 @@ final class SKKServDestinationTests: XCTestCase {
 
     func testDecodeResponseUTF8Found() throws {
         let destination = SKKServDestination(host: "localhost", port: 1178, requestEncoding: .utf8, responseEncoding: .utf8)
-        XCTAssertEqual(destination.decodeResponse("1/変換/返還/\n".data(using: .utf8)!), "1/変換/返還/\n")
+        XCTAssertEqual(destination.decodeResponse(try XCTUnwrap("1/変換/返還/\n".data(using: .utf8))), "1/変換/返還/\n")
     }
 
     func testDecodeResponseEUCFound() throws {
         let destination = SKKServDestination(host: "localhost", port: 1178, requestEncoding: .japaneseEUC, responseEncoding: .japaneseEUC)
-        XCTAssertEqual(destination.decodeResponse("1/変換/返還/\n".data(using: .japaneseEUC)!), "1/変換/返還/\n")
+        XCTAssertEqual(destination.decodeResponse(try XCTUnwrap("1/変換/返還/\n".data(using: .japaneseEUC))), "1/変換/返還/\n")
     }
 
     // 応答UTF-8設定なのに候補なし応答がEUCエコーで返る混在サーバ: デコード失敗なのでnilを返す
     func testDecodeResponseUTF8ButEucNotFound() throws {
         let destination = SKKServDestination(host: "localhost", port: 1178, requestEncoding: .japaneseEUC, responseEncoding: .utf8)
-        let eucNotFound = "4へんかん".data(using: .japaneseEUC)!  // UTF-8としては不正なバイト列
+        let eucNotFound = try XCTUnwrap("4へんかん".data(using: .japaneseEUC))  // UTF-8としては不正なバイト列
         XCTAssertNil(destination.decodeResponse(eucNotFound))
     }
 

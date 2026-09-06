@@ -7,7 +7,7 @@ import XCTest
 
 final class UpdateCheckerTests: XCTestCase {
     func testDecode() throws {
-        let fileURL = Bundle(for: Self.self).url(forResource: "release", withExtension: "json")!
+        let fileURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "release", withExtension: "json"))
         let data = try Data(NSData(contentsOf: fileURL))
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

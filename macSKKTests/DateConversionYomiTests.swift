@@ -11,16 +11,13 @@ final class DateConversionYomiTests: XCTestCase {
         XCTAssertNil(DateConversion.Yomi(dict: ["yomi": "きょう", "relative": "xxxx"])) // 現在との差分が不正
     }
 
-    func testEncodeAndDecode() {
+    func testEncodeAndDecode() throws {
         // Test with yomi and relative
-        let yomi = DateConversion.Yomi(dict: ["yomi": "きょう", "relative": "tomorrow"])
-        XCTAssertNotNil(yomi)
-        let encoded = yomi!.encode()
-        let decoded = DateConversion.Yomi(dict: encoded)
-        XCTAssertNotNil(decoded)
-        XCTAssertEqual(decoded!.yomi, yomi!.yomi)
-        XCTAssertEqual(decoded!.relative, yomi!.relative)
-        XCTAssertNotEqual(decoded!.id, yomi!.id) // idは毎回再生成されるので一致しない
+        let yomi = try XCTUnwrap(DateConversion.Yomi(dict: ["yomi": "きょう", "relative": "tomorrow"]))
+        let decoded = try XCTUnwrap(DateConversion.Yomi(dict: yomi.encode()))
+        XCTAssertEqual(decoded.yomi, yomi.yomi)
+        XCTAssertEqual(decoded.relative, yomi.relative)
+        XCTAssertNotEqual(decoded.id, yomi.id) // idは毎回再生成されるので一致しない
     }
 
     func testTimeInterval() {
