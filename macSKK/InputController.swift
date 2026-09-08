@@ -116,6 +116,11 @@ class InputController: IMKInputController {
                                                 replacementRange: Self.notFoundRange)
                     }
                     textInput.setMarkedText(NSAttributedString(attributedText), selectionRange: cursorRange, replacementRange: Self.notFoundRange)
+                case .replaceFixedText(let text, let replacementRange):
+                    // 確定のやり直し。すでにクライアントに送った確定文字列を別の確定文字列で置き換える。
+                    // setMarkedTextのreplacementRangeやinsertTextの空文字列は無視される (macOS 26で実測) が、
+                    // 空でない文字列のinsertTextであれば範囲指定が効く。
+                    textInput.insertText(text, replacementRange: replacementRange)
                 case .modeChanged(let inputMode):
                     // KittyやAlacrittyなど、q/lによるモード切り替えでq/lが入力されたり、C-jで改行が入力されるのを回避するワークアラウンド
                     // AquaSKKの空文字列挿入を参考にしています。
