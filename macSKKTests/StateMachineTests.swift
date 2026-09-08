@@ -4570,6 +4570,145 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(Global.dictionary.recentRegisteredCandidates.first, RecentRegisteredCandidate(yomi: "い", word: Word("伊")))
     }
 
+    @MainActor func testHandleNormalFixNextCandidate() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都"), Word("徒")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        XCTAssertEqual(textInput.text, "戸")
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "都", "確定した変換候補が次の変換候補で置き換えられる")
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "徒", "続けて押すとさらに次の変換候補に進む")
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸", "最後まで進むと最初の変換候補に戻る")
+        XCTAssertEqual(Global.dictionary.refer("と", option: nil).first, Word("戸"), "置き換えた変換候補が学習される")
+    }
+
+    @MainActor func testHandleNormalFixNextCandidateAfterCursorMoved() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        textInput.moveCaret(to: 0)
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateCharacterAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸", "確定した文字列がキャレットの直前にないときは置き換えない")
+        if case .composing(let composing) = stateMachine.state.inputMethod {
+            XCTAssertEqual(composing.romaji, "x", "文字キーを割り当てている場合は通常の文字入力として扱われる")
+        } else {
+            XCTFail("通常の文字入力として扱われること")
+        }
+    }
+
+    @MainActor func testHandleNormalFixNextCandidateSingleCandidate() {
+        Global.dictionary.setEntries(["と": [Word("戸")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateCharacterAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸", "変換候補が一つしかないときは置き換えない")
+        if case .composing(let composing) = stateMachine.state.inputMethod {
+            XCTAssertEqual(composing.romaji, "x", "文字キーを割り当てている場合は通常の文字入力として扱われる")
+        } else {
+            XCTFail("通常の文字入力として扱われること")
+        }
+    }
+
+    @MainActor func testHandleNormalFixNextCandidateWithoutSelectedRange() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        // ターミナルなどカーソル位置を返さないクライアント
+        let textInput = MockTextInput(supportsSelectedRange: false)
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸", "カーソル位置を取得できないクライアントでは置き換えない")
+    }
+
+    @MainActor func testHandleNormalFixNextCandidateWithoutReplacementRange() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都"), Word("徒")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        // 範囲を指定した置き換えに対応していないクライアント
+        let textInput = MockTextInput(supportsReplacementRange: false)
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸都", "置き換えられずに追記されてしまう")
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸都", "追記を検出したあとは繰り返さない")
+    }
+
+    @MainActor func testHandleNormalFixNextCandidateSwallowsModifiedKey() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        // カーソル位置を返さないクライアントなので置き換えられない
+        let textInput = MockTextInput(supportsSelectedRange: false)
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)),
+                      "置き換えられなくても修飾キー付きのキーはアプリに渡さない (Ctrl-Backspaceのようなキーを割り当てた場合にターミナルで単語が削除されてしまうため)")
+        XCTAssertEqual(textInput.text, "戸")
+        if case .normal = stateMachine.state.inputMethod {} else {
+            XCTFail("状態が変わらないこと")
+        }
+    }
+
+    /// InputControllerがクライアントに書き込む処理を模倣する
+    @MainActor private func connect(_ stateMachine: StateMachine, to textInput: MockTextInput) {
+        let notFoundRange = NSRange(location: NSNotFound, length: NSNotFound)
+        stateMachine.inputMethodEvent.sink { event in
+            switch event {
+            case .fixedText(let text):
+                textInput.insertText(text, replacementRange: notFoundRange)
+            case .replaceFixedText(let text, let replacementRange):
+                textInput.insertText(text, replacementRange: replacementRange)
+            case .markedText, .modeChanged:
+                break
+            }
+        }.store(in: &cancellables)
+    }
+
+    // Ctrl-zを押した (デフォルトのキー割り当て。normalのときは直前の確定を次の変換候補に変更する)
+    private func fixNextCandidateAction(textInput: MockTextInput) -> Action {
+        Action(keyBind: .fixNextCandidate,
+               event: generateNSEvent(character: "z", characterIgnoringModifiers: "z", modifierFlags: [.control]),
+               textInput: textInput)
+    }
+
+    // fixNextCandidateに文字キー (Shift-x) を割り当てた場合
+    private func fixNextCandidateCharacterAction(textInput: MockTextInput) -> Action {
+        Action(keyBind: .fixNextCandidate,
+               event: generateNSEvent(character: "X", characterIgnoringModifiers: "x", modifierFlags: [.shift]),
+               textInput: textInput)
+    }
+
     // Ctrl-jを押した
     var hiraganaAction: Action {
         Action(keyBind: .hiragana, event: generateNSEvent(character: "j", characterIgnoringModifiers: "j", modifierFlags: .control))

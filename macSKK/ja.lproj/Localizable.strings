@@ -173,6 +173,7 @@
 "KeyBindingActionUnregister" = "選択中の変換候補の削除";
 "KeyBindingActionRegisterpaste" = "登録モードでペースト";
 "KeyBindingActionReconvert" = "選択テキストを再変換";
+"KeyBindingActionFixnextcandidate" = "直前の確定を次の候補に変更";
 "KeyBindingActionAffix" = "接頭辞/接尾辞";
 "KeyBindingActionEisu" = "英数キー";
 "KeyBindingActionKana" = "かなキー";

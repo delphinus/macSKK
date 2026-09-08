@@ -12,6 +12,12 @@ enum InputMethodEvent: Equatable {
     ///
     /// 登録モード時は "[登録：あああ]ほげ" のように長くなる
     case markedText(MarkedText)
+    /// すでにクライアントに送った確定文字列を別の確定文字列で置き換える。確定のやり直しで使う。
+    ///
+    /// replacementRangeはクライアントのドキュメント先頭からの範囲。
+    /// クライアントが範囲指定に対応していない場合は置き換わらずに追記されるため、
+    /// 送ったあとに置き換えられたかを確認すること。
+    case replaceFixedText(String, replacementRange: NSRange)
     /// qやlなどにより入力モードを変更する
     case modeChanged(InputMode)
 }
@@ -56,6 +62,22 @@ final class StateMachine {
     /// 1文字で確定するローマ字やq/lなどのモード変更などで未確定文字列を一度表示するワークグラウンドが有効かどうか
     /// xterm.jsを利用しているVSCodeのターミナルやHyperなどaiueoで直接入力されてしまう環境向け
     var enableMarkedTextWorkaround: Bool
+    /// 直前に変換候補選択から確定した内容。確定のやり直し (``KeyBinding/Action/fixNextCandidate``) で使う。
+    /// 確定以外の文字列をクライアントに送ったときはnilに戻す。
+    private var lastFix: LastFix?
+
+    /// 直前に変換候補選択から確定した内容
+    private struct LastFix {
+        /// 確定したときの変換候補選択状態
+        let selecting: SelectingState
+        /// クライアント上で確定文字列が始まる位置。確定した時点では不明なのでnil
+        let location: Int?
+        /// クライアントに送った確定文字列
+        let text: String
+        /// 確定のやり直しで置き換える前にクライアントにあった文字列。
+        /// クライアントによっては置き換えた直後の読み取りが古い文字列を返すため、その判定に使う
+        let previousText: String?
+    }
 
     init(initialState: IMEState = IMEState(), inlineCandidateCount: Int = 3, enableMarkedTextWorkaround: Bool = false) {
         state = initialState
@@ -471,6 +493,21 @@ final class StateMachine {
                 }
             }
             return true
+        case .fixNextCandidate:
+            if fixNextCandidate(action: action) {
+                return true
+            }
+            // 置き換えられない場合の扱いは割り当てられたキーによって変える。
+            // デフォルトのCtrl-zのような修飾キー付きのキーはアプリに渡さず、なにもせずに握り潰す。
+            // Ctrl-BackspaceやCtrl-uのように、アプリに渡るとターミナルなどで直前の単語や
+            // 行が削除されてしまうキーを割り当てられるため
+            // (ターミナルによっては握り潰してもターミナル側で処理されてしまう)。
+            // Shift-xのような文字キーは通常の文字入力として扱う。
+            let modifierFlags = action.event.modifierFlags
+            if modifierFlags.contains(.control) || modifierFlags.contains(.command) || modifierFlags.contains(.function) {
+                return true
+            }
+            break
         case .eisu:
             // 何もしない (OSがIMEの切り替えはしてくれる)
             return true
@@ -509,6 +546,105 @@ final class StateMachine {
         } else {
             return handleNormalPrintable(input: input, action: action, specialState: specialState)
         }
+    }
+
+    /**
+     * 直前に変換候補選択から確定した文字列を、次の変換候補で置き換える。
+     *
+     * ddskkの確定アンドゥ (skk-undo-kakutei) のように未確定文字列 (▼) の状態に戻すことはできない。
+     * macOSの入力メソッドからは確定済み文字列の範囲を指定して未確定文字列を置くことができず、
+     * setMarkedTextのreplacementRangeは無視されるため (macOS 26で実測)、
+     * 範囲指定が有効なinsertTextで確定済み文字列そのものを置き換えている。
+     *
+     * 確定した直後 (確定した文字列がキャレットの直前に残っているとき) のみ有効。
+     * 続けて押すと次の変換候補に進み、最後まで行くと最初の変換候補に戻る。
+     *
+     * 置き換えた場合はtrue、置き換えなかった場合はfalseを返す。
+     */
+    @MainActor private func fixNextCandidate(action: Action) -> Bool {
+        // 単語登録中の確定はクライアントに文字列を送っていないので対象外
+        guard state.specialState == nil, let lastFix, let textInput = action.textInput else {
+            return false
+        }
+        switch state.inputMode {
+        case .hiragana, .katakana, .hankaku:
+            break
+        case .direct, .eisu:
+            return false
+        }
+        let selecting = lastFix.selecting
+        // 変換候補が一つしかないときは置き換えようがない
+        guard selecting.candidates.count > 1 else {
+            return false
+        }
+        let fixedLength = (lastFix.text as NSString).length
+        let selectedRange = textInput.selectedRange()
+        // 選択範囲があるときは再変換 (reconvert) の対象なので確定のやり直しはしない
+        guard selectedRange.location != NSNotFound, selectedRange.length == 0 else {
+            return false
+        }
+        // クライアント上で確定文字列が始まる位置。
+        // 一度置き換えたあとは自分が書き込んだ位置を使う。
+        let location: Int
+        if let recorded = lastFix.location {
+            location = recorded
+        } else {
+            guard selectedRange.location >= fixedLength else {
+                return false
+            }
+            location = selectedRange.location - fixedLength
+        }
+        /// クライアントのlocationからの文字列が指定した文字列で、かつその直後にキャレットがあるかどうか
+        func clientHas(_ text: String) -> Bool {
+            let length = (text as NSString).length
+            guard location + length == selectedRange.location else {
+                return false
+            }
+            return textInput.attributedSubstring(from: NSRange(location: location, length: length))?.string == text
+        }
+        // 確定した文字列がキャレットの直前に残っているときのみ置き換える。
+        // 確定後に他の文字を入力していたりカーソルを移動している場合や、
+        // クライアントがselectedRange/attributedSubstringに対応していない場合はここで弾かれる。
+        //
+        // ただしChromiumベースのアプリは範囲を指定して置き換えたときに周辺テキストのキャッシュを
+        // 更新しないため、置き換えたあとも置き換える前の文字列を返すことがある。
+        // その場合は自分が書き込んだ内容を信用して続行する。
+        if !clientHas(lastFix.text) {
+            guard let previousText = lastFix.previousText, clientHas(previousText) else {
+                return false
+            }
+            logger.debug("直前の確定の差し替え: クライアントの読み取りが置き換える前の文字列を返しています")
+        }
+        // 次の変換候補。最後まで行ったら最初の変換候補に戻る
+        let candidateIndex = (selecting.candidateIndex + 1) % selecting.candidates.count
+        let newSelecting = SelectingState(prev: selecting.prev,
+                                          yomi: selecting.yomi,
+                                          candidates: selecting.candidates,
+                                          candidateIndex: candidateIndex,
+                                          remain: selecting.remain,
+                                          completion: selecting.completion)
+        let newText = newSelecting.fixedText(dropLast: false)
+        guard !newText.isEmpty else {
+            return false
+        }
+        inputMethodEventSubject.send(.replaceFixedText(newText,
+                                                       replacementRange: NSRange(location: location, length: fixedLength)))
+        // 範囲指定に対応していないクライアントでは置き換えではなく追記になってしまう。
+        // 追記されたぶんは元に戻せないが、検出できたら記録して繰り返さないようにする。
+        if textInput.selectedRange().location == location + fixedLength + (newText as NSString).length {
+            logger.warning("クライアントが確定済み文字列の置き換えに対応していないため文字列が追記されました")
+            self.lastFix = nil
+            return true
+        }
+        addWordToUserDict(yomi: newSelecting.yomi,
+                          okuri: newSelecting.okuri,
+                          candidate: newSelecting.candidates[candidateIndex])
+        // 続けて押したときにさらに次の変換候補に進めるようにする
+        self.lastFix = LastFix(selecting: newSelecting,
+                               location: location,
+                               text: newText,
+                               previousText: lastFix.text)
+        return true
     }
 
     /**
@@ -1069,7 +1205,7 @@ final class StateMachine {
             }
         case .up, .down, .registerPaste, .eisu, .kana, .toggleKana, .reconvert:
             return true
-        case .abbrev, .directAbbrev, .unregister, .backwardCandidate, .none:
+        case .abbrev, .directAbbrev, .unregister, .backwardCandidate, .fixNextCandidate, .none:
             break
         }
 
@@ -1358,6 +1494,12 @@ final class StateMachine {
             } else {
                 state.inputMethod = .normal
                 addFixedText(fixedText)
+                // 直前の確定の差し替えのために確定内容を覚えておく。
+                // 単語登録中はクライアントに文字列を送らない (登録中の文字列に追加される) ので対象外。
+                // バックスペースで末尾を削って確定した場合は変換候補と確定文字列が一致しないので対象外。
+                if state.specialState == nil && !fixedText.isEmpty && !dropLast {
+                    lastFix = LastFix(selecting: selecting, location: nil, text: fixedText, previousText: nil)
+                }
                 if let prevMode = selecting.prev.composing.prevMode {
                     state.inputMode = prevMode
                     inputMethodEventSubject.send(.modeChanged(prevMode))
@@ -1515,7 +1657,7 @@ final class StateMachine {
             return handle(action)
         case .registerPaste, .delete, .eisu, .kana, .reconvert:
             return true
-        case .toggleKana, .toggleAndFixKana, .direct, .toggleDirect, .zenkaku, .abbrev, .directAbbrev, .japanese:
+        case .toggleKana, .toggleAndFixKana, .direct, .toggleDirect, .zenkaku, .abbrev, .directAbbrev, .japanese, .fixNextCandidate:
             break
         case nil:
             break
@@ -1669,6 +1811,9 @@ final class StateMachine {
     }
 
     private func addFixedText(_ text: String) {
+        // 直前の確定の差し替えは変換候補選択から確定した直後のみ有効。
+        // 呼び出し元のfixCurrentSelectがこのメソッドを呼んだあとに設定し直す。
+        lastFix = nil
         if let specialState = state.specialState {
             // state.markedTextを更新してinputMethodEventSubjectにstate.displayText()をsendする
             state.specialState = specialState.appendText(text)

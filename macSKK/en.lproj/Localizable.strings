@@ -173,6 +173,7 @@
 "KeyBindingActionUnregister" = "Unregister selected candidate";
 "KeyBindingActionRegisterpaste" = "Paste on register";
 "KeyBindingActionReconvert" = "Reconvert selected text";
+"KeyBindingActionFixnextcandidate" = "Change last commit to next candidate";
 "KeyBindingActionAffix" = "Prefix/Suffix";
 "KeyBindingActionEisu" = "Eisu Key";
 "KeyBindingActionKana" = "Kana Key";
