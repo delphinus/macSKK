@@ -77,6 +77,9 @@ final class StateMachine {
         /// 確定のやり直しで置き換える前にクライアントにあった文字列。
         /// クライアントによっては置き換えた直後の読み取りが古い文字列を返すため、その判定に使う
         let previousText: String?
+        /// 選択中の変換候補をまだユーザー辞書に登録していないかどうか。
+        /// 確定のやり直しで通過しただけの変換候補を登録しないよう、やり直しが終わるまで登録を遅らせている。
+        var needsRegistration: Bool = false
     }
 
     init(initialState: IMEState = IMEState(), inlineCandidateCount: Int = 3, enableMarkedTextWorkaround: Bool = false) {
@@ -90,6 +93,10 @@ final class StateMachine {
 
     /// `Action`をハンドルした場合には`true`、しなかった場合は`false`を返す
     @MainActor func handle(_ action: Action) -> Bool {
+        // 確定のやり直し以外のキーが押されたらやり直しは終わったものとみなす
+        if action.keyBind != .fixNextCandidate {
+            flushLastFixRegistration()
+        }
         switch state.inputMethod {
         case .normal:
             return handleNormal(action, specialState: state.specialState)
@@ -102,6 +109,8 @@ final class StateMachine {
 
     /// macSKKで取り扱わないキーイベントを処理するかどうかを返す
     @MainActor func handleUnhandledEvent(_ event: NSEvent) -> Bool {
+        // 確定のやり直しのキーはキーバインドとして解決されるのでここには来ない
+        flushLastFixRegistration()
         if state.specialState != nil {
             return true
         }
@@ -633,18 +642,37 @@ final class StateMachine {
         // 追記されたぶんは元に戻せないが、検出できたら記録して繰り返さないようにする。
         if textInput.selectedRange().location == location + fixedLength + (newText as NSString).length {
             logger.warning("クライアントが確定済み文字列の置き換えに対応していないため文字列が追記されました")
+            flushLastFixRegistration()
             self.lastFix = nil
             return true
         }
-        addWordToUserDict(yomi: newSelecting.yomi,
-                          okuri: newSelecting.okuri,
-                          candidate: newSelecting.candidates[candidateIndex])
-        // 続けて押したときにさらに次の変換候補に進めるようにする
+        // 続けて押したときにさらに次の変換候補に進めるようにする。
+        // 選択した変換候補のユーザー辞書への登録はやり直しが終わるまで遅らせる (flushLastFixRegistration)
         self.lastFix = LastFix(selecting: newSelecting,
                                location: location,
                                text: newText,
-                               previousText: lastFix.text)
+                               previousText: lastFix.text,
+                               needsRegistration: true)
         return true
+    }
+
+    /**
+     * 確定のやり直しで選択した変換候補を、遅らせていたユーザー辞書への登録として実行する。
+     *
+     * 確定のやり直しは押すたびに次の変換候補へ進むため、押すたびに登録すると通過しただけの変換候補が
+     * すべてユーザー辞書の先頭に積まれてしまい、その読みの変換候補の順序が壊れる。
+     * 変換候補が多い読みほど影響が大きいので、やり直しが終わってから最後に選ばれた変換候補だけを登録する。
+     */
+    @MainActor private func flushLastFixRegistration() {
+        guard var lastFix, lastFix.needsRegistration else {
+            return
+        }
+        let selecting = lastFix.selecting
+        addWordToUserDict(yomi: selecting.yomi,
+                          okuri: selecting.okuri,
+                          candidate: selecting.candidates[selecting.candidateIndex])
+        lastFix.needsRegistration = false
+        self.lastFix = lastFix
     }
 
     /**
@@ -1789,6 +1817,8 @@ final class StateMachine {
     ///   - 状態がUnregister (ユーザー辞書から削除するか質問中)
     ///     - 空文字列で確定する
     @MainActor func commitComposition() {
+        // 入力中状態がなくても、確定のやり直しで遅らせていた登録は済ませておく
+        flushLastFixRegistration()
         if state.specialState != nil {
             state.inputMethod = .normal
             state.specialState = nil
