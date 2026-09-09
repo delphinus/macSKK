@@ -4587,7 +4587,43 @@ final class StateMachineTests: XCTestCase {
         XCTAssertEqual(textInput.text, "徒", "続けて押すとさらに次の変換候補に進む")
         XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
         XCTAssertEqual(textInput.text, "戸", "最後まで進むと最初の変換候補に戻る")
-        XCTAssertEqual(Global.dictionary.refer("と", option: nil).first, Word("戸"), "置き換えた変換候補が学習される")
+    }
+
+    @MainActor func testHandleNormalFixNextCandidateDefersRegistration() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都"), Word("徒")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        XCTAssertEqual(Global.dictionary.refer("と", option: nil), [Word("戸"), Word("都"), Word("徒")])
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "徒")
+        XCTAssertEqual(Global.dictionary.refer("と", option: nil), [Word("戸"), Word("都"), Word("徒")],
+                       "やり直しの途中では通過しただけの変換候補を学習しない")
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "a")))
+        XCTAssertEqual(Global.dictionary.refer("と", option: nil), [Word("徒"), Word("戸"), Word("都")],
+                       "やり直し以外のキーを押すと最後に選んだ変換候補だけが学習される")
+    }
+
+    @MainActor func testHandleNormalFixNextCandidateRegistrationOnCommitComposition() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都"), Word("徒")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction))
+        XCTAssertTrue(stateMachine.handle(fixNextCandidateAction(textInput: textInput)))
+        stateMachine.commitComposition()
+        XCTAssertEqual(Global.dictionary.refer("と", option: nil), [Word("都"), Word("戸"), Word("徒")],
+                       "キー入力なしに入力状態が終了しても学習される")
     }
 
     @MainActor func testHandleNormalFixNextCandidateAfterCursorMoved() {
