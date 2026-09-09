@@ -80,6 +80,10 @@ struct KeyBinding: Identifiable, Hashable {
         /// 確定した文字列がキャレットの直前にそのまま残っているときのみ有効。
         /// 確定後に別の文字を入力したりカーソルを移動していた場合は何も起きない。
         case fixNextCandidate
+        /// 直前に確定した文字列を前の変換候補で置き換える。デフォルトはCtrl-Shift-zキー
+        ///
+        /// 有効になる条件は ``fixNextCandidate`` と同じ。
+        case fixPrevCandidate
         /// 接頭辞・接尾辞の入力。デフォルトは ">" (Shift-.キー)
         case affix
         /// 英数キー
@@ -134,8 +138,8 @@ struct KeyBinding: Identifiable, Hashable {
                 } else {
                     return true
                 }
-            // fixNextCandidateはnormalかつ日本語入力モードのときのみ受理
-            case .fixNextCandidate:
+            // 確定のやり直しはnormalかつ日本語入力モードのときのみ受理
+            case .fixNextCandidate, .fixPrevCandidate:
                 guard case .normal = inputMethod else {
                     return false
                 }
@@ -365,6 +369,10 @@ struct KeyBinding: Identifiable, Hashable {
                 // Terminal.appとWezTermはCtrl-BackspaceをIMEに渡さず、
                 // KittyとGhosttyはIMEが処理してもターミナル側でも処理するため、macSKKからは防げない
                 return KeyBinding(action, [Input(key: .character("z"), modifierFlags: .control)])
+            case .fixPrevCandidate:
+                // Ctrl-zにShiftを足したもの。Ctrl-zのInputはoptionalModifierFlagsが空なので
+                // Shiftを押している間はfixNextCandidateとしては受理されない
+                return KeyBinding(action, [Input(key: .character("z"), modifierFlags: [.control, .shift])])
             case .affix:
                 return KeyBinding(action, [Input(key: .character("."), modifierFlags: .shift)])
             case .eisu:

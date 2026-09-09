@@ -3,6 +3,7 @@
 
 import Cocoa
 import Combine
+import InputMethodKit
 
 /// ActionによってIMEに関する状態が変更するイベントの列挙
 enum InputMethodEvent: Equatable {
@@ -77,9 +78,9 @@ final class StateMachine {
         /// 確定のやり直しで置き換える前にクライアントにあった文字列。
         /// クライアントによっては置き換えた直後の読み取りが古い文字列を返すため、その判定に使う
         let previousText: String?
-        /// 選択中の変換候補をまだユーザー辞書に登録していないかどうか。
-        /// 確定のやり直しで通過しただけの変換候補を登録しないよう、やり直しが終わるまで登録を遅らせている。
-        var needsRegistration: Bool = false
+        /// 確定のやり直しの最中かどうか。
+        /// 変換候補パネルを表示していて、選択中の変換候補をまだユーザー辞書に登録していない状態。
+        var redoing: Bool = false
     }
 
     init(initialState: IMEState = IMEState(), inlineCandidateCount: Int = 3, enableMarkedTextWorkaround: Bool = false) {
@@ -93,9 +94,13 @@ final class StateMachine {
 
     /// `Action`をハンドルした場合には`true`、しなかった場合は`false`を返す
     @MainActor func handle(_ action: Action) -> Bool {
-        // 確定のやり直し以外のキーが押されたらやり直しは終わったものとみなす
-        if action.keyBind != .fixNextCandidate {
-            flushLastFixRegistration()
+        if action.keyBind != .fixNextCandidate && action.keyBind != .fixPrevCandidate {
+            // 確定のやり直し中は変換候補パネルを表示しているので、変換候補選択と同じ操作も受け付ける。
+            // どちらでもないキーが押されたらやり直しは終わったものとみなす
+            if handleRedoingFixedText(action) {
+                return true
+            }
+            finishRedoFixedText()
         }
         switch state.inputMethod {
         case .normal:
@@ -110,7 +115,7 @@ final class StateMachine {
     /// macSKKで取り扱わないキーイベントを処理するかどうかを返す
     @MainActor func handleUnhandledEvent(_ event: NSEvent) -> Bool {
         // 確定のやり直しのキーはキーバインドとして解決されるのでここには来ない
-        flushLastFixRegistration()
+        finishRedoFixedText()
         if state.specialState != nil {
             return true
         }
@@ -502,8 +507,8 @@ final class StateMachine {
                 }
             }
             return true
-        case .fixNextCandidate:
-            if fixNextCandidate(action: action) {
+        case .fixNextCandidate, .fixPrevCandidate:
+            if redoFixedText(action: action, diff: action.keyBind == .fixNextCandidate ? 1 : -1) {
                 return true
             }
             // 置き換えられない場合の扱いは割り当てられたキーによって変える。
@@ -558,7 +563,7 @@ final class StateMachine {
     }
 
     /**
-     * 直前に変換候補選択から確定した文字列を、次の変換候補で置き換える。
+     * 直前に変換候補選択から確定した文字列を、次 (もしくは前) の変換候補で置き換える。
      *
      * ddskkの確定アンドゥ (skk-undo-kakutei) のように未確定文字列 (▼) の状態に戻すことはできない。
      * macOSの入力メソッドからは確定済み文字列の範囲を指定して未確定文字列を置くことができず、
@@ -566,11 +571,12 @@ final class StateMachine {
      * 範囲指定が有効なinsertTextで確定済み文字列そのものを置き換えている。
      *
      * 確定した直後 (確定した文字列がキャレットの直前に残っているとき) のみ有効。
-     * 続けて押すと次の変換候補に進み、最後まで行くと最初の変換候補に戻る。
+     * 続けて押すとさらに次の変換候補に進み、最後まで行くと反対側の端の変換候補に戻る。
      *
-     * 置き換えた場合はtrue、置き換えなかった場合はfalseを返す。
+     * - Parameter diff: 進める変換候補の数。次の変換候補なら1、前の変換候補なら-1。
+     * - Returns: 置き換えた場合はtrue、置き換えなかった場合はfalse。
      */
-    @MainActor private func fixNextCandidate(action: Action) -> Bool {
+    @MainActor private func redoFixedText(action: Action, diff: Int) -> Bool {
         // 単語登録中の確定はクライアントに文字列を送っていないので対象外
         guard state.specialState == nil, let lastFix, let textInput = action.textInput else {
             return false
@@ -581,9 +587,27 @@ final class StateMachine {
         case .direct, .eisu:
             return false
         }
-        let selecting = lastFix.selecting
+        let candidates = lastFix.selecting.candidates
         // 変換候補が一つしかないときは置き換えようがない
-        guard selecting.candidates.count > 1 else {
+        guard candidates.count > 1 else {
+            return false
+        }
+        // 端まで行ったら反対側の端に戻る
+        let candidateIndex = (lastFix.selecting.candidateIndex + diff % candidates.count + candidates.count) % candidates.count
+        return redoFixedText(candidateIndex: candidateIndex, textInput: textInput)
+    }
+
+    /**
+     * 直前に変換候補選択から確定した文字列を、`candidateIndex` 番目の変換候補で置き換える。
+     *
+     * 置き換えた場合はtrue、置き換えなかった場合はfalseを返す。
+     */
+    @MainActor private func redoFixedText(candidateIndex: Int, textInput: any IMKTextInput) -> Bool {
+        guard let lastFix else {
+            return false
+        }
+        let selecting = lastFix.selecting
+        guard candidateIndex >= 0 && candidateIndex < selecting.candidates.count else {
             return false
         }
         let fixedLength = (lastFix.text as NSString).length
@@ -624,8 +648,6 @@ final class StateMachine {
             }
             logger.debug("直前の確定の差し替え: クライアントの読み取りが置き換える前の文字列を返しています")
         }
-        // 次の変換候補。最後まで行ったら最初の変換候補に戻る
-        let candidateIndex = (selecting.candidateIndex + 1) % selecting.candidates.count
         let newSelecting = SelectingState(prev: selecting.prev,
                                           yomi: selecting.yomi,
                                           candidates: selecting.candidates,
@@ -642,37 +664,114 @@ final class StateMachine {
         // 追記されたぶんは元に戻せないが、検出できたら記録して繰り返さないようにする。
         if textInput.selectedRange().location == location + fixedLength + (newText as NSString).length {
             logger.warning("クライアントが確定済み文字列の置き換えに対応していないため文字列が追記されました")
-            flushLastFixRegistration()
+            finishRedoFixedText()
             self.lastFix = nil
             return true
         }
-        // 続けて押したときにさらに次の変換候補に進めるようにする。
-        // 選択した変換候補のユーザー辞書への登録はやり直しが終わるまで遅らせる (flushLastFixRegistration)
+        // 続けて押したときにさらに変換候補を進められるようにする。
+        // 選択した変換候補のユーザー辞書への登録はやり直しが終わるまで遅らせる (finishRedoFixedText)
         self.lastFix = LastFix(selecting: newSelecting,
                                location: location,
                                text: newText,
                                previousText: lastFix.text,
-                               needsRegistration: true)
+                               redoing: true)
+        // 変換候補が多いときにコレと思った変換候補を通り過ぎないよう、
+        // やり直し中はインライン表示の設定によらず常に変換候補パネルを表示する
+        updateCandidates(selecting: newSelecting, inlineCandidateCount: 0)
         return true
     }
 
     /**
-     * 確定のやり直しで選択した変換候補を、遅らせていたユーザー辞書への登録として実行する。
+     * 確定のやり直し中 (変換候補パネルの表示中) の、変換候補選択と同じ操作を処理する。
      *
-     * 確定のやり直しは押すたびに次の変換候補へ進むため、押すたびに登録すると通過しただけの変換候補が
+     * パネルを表示している以上そこに見えている操作は効いてほしいので、
+     * 変換候補選択中と同じキーで移動と決定ができるようにする。
+     * ここで処理しないキーが押されたときは呼び出し元がやり直しを終了する。
+     *
+     * Enterは処理しない。変換候補選択中は確定キーだが、やり直し中は文字がすでに確定済みで
+     * 確定する対象がなく、握り潰すと確定のやり直しの直後に改行や送信ができなくなるため。
+     * 左右キーも、奪うとパネルを出したままキャレットを動かせなくなるので処理しない。
+     *
+     * - Returns: 処理した場合はtrue、確定のやり直しの操作でない場合はfalse。
+     */
+    @MainActor private func handleRedoingFixedText(_ action: Action) -> Bool {
+        guard let lastFix, lastFix.redoing, case .normal = state.inputMethod, state.specialState == nil,
+              let textInput = action.textInput else {
+            return false
+        }
+        let selecting = lastFix.selecting
+        let count = selecting.candidates.count
+        let displayCount = Global.displayCandidateCount
+        /// 現在のページの先頭の変換候補の位置。やり直し中はインライン表示しないのでページの区切りは単純
+        let pageStart = selecting.candidateIndex - selecting.candidateIndex % displayCount
+        /// 次のページの先頭。最後のページなら最初のページの先頭に戻る
+        let nextPageStart = pageStart + displayCount < count ? pageStart + displayCount : 0
+        /// 前のページの先頭。最初のページなら最後のページの先頭に戻る
+        let previousPageStart = pageStart > 0 ? pageStart - displayCount : (count - 1) - (count - 1) % displayCount
+        let candidateIndex: Int
+        // 上下キーの移動量は変換候補選択中と同じく変換候補リストの表示方向によって変える
+        switch action.keyBind {
+        case .down:
+            candidateIndex = if case .vertical = Global.candidateListDirection.value {
+                (selecting.candidateIndex + 1) % count
+            } else {
+                nextPageStart
+            }
+        case .up:
+            candidateIndex = if case .vertical = Global.candidateListDirection.value {
+                (selecting.candidateIndex - 1 + count) % count
+            } else {
+                previousPageStart
+            }
+        case .space:
+            // 変換候補選択中と同じくページ送り
+            candidateIndex = nextPageStart
+        case .backwardCandidate:
+            candidateIndex = (selecting.candidateIndex - 1 + count) % count
+        default:
+            // 変換候補パネルに表示している選択用のキー。修飾キーとの組み合わせは対象外
+            let modifierFlags = action.event.modifierFlags
+            guard !modifierFlags.contains(.control), !modifierFlags.contains(.command),
+                  !modifierFlags.contains(.option), !modifierFlags.contains(.function),
+                  let input = action.event.charactersIgnoringModifiers?.lowercased().first,
+                  let index = Global.selectCandidateKeys.firstIndex(of: input), index < displayCount else {
+                return false
+            }
+            // 変換候補がない位置の選択用のキーは握り潰す
+            if pageStart + index < count {
+                _ = redoFixedText(candidateIndex: pageStart + index, textInput: textInput)
+                // 選択用のキーは変換候補選択中と同じく決定として扱う
+                finishRedoFixedText()
+            }
+            return true
+        }
+        if !redoFixedText(candidateIndex: candidateIndex, textInput: textInput) {
+            // 置き換えられなくなったらやり直しを終える
+            finishRedoFixedText()
+        }
+        return true
+    }
+
+    /**
+     * 確定のやり直しを終了する。
+     *
+     * 変換候補パネルを閉じ、遅らせていたユーザー辞書への登録を行う。
+     *
+     * 確定のやり直しは押すたびに変換候補を進めるため、押すたびに登録すると通過しただけの変換候補が
      * すべてユーザー辞書の先頭に積まれてしまい、その読みの変換候補の順序が壊れる。
      * 変換候補が多い読みほど影響が大きいので、やり直しが終わってから最後に選ばれた変換候補だけを登録する。
      */
-    @MainActor private func flushLastFixRegistration() {
-        guard var lastFix, lastFix.needsRegistration else {
+    @MainActor private func finishRedoFixedText() {
+        guard var lastFix, lastFix.redoing else {
             return
         }
         let selecting = lastFix.selecting
         addWordToUserDict(yomi: selecting.yomi,
                           okuri: selecting.okuri,
                           candidate: selecting.candidates[selecting.candidateIndex])
-        lastFix.needsRegistration = false
+        lastFix.redoing = false
         self.lastFix = lastFix
+        updateCandidates(selecting: nil)
     }
 
     /**
@@ -1233,7 +1332,7 @@ final class StateMachine {
             }
         case .up, .down, .registerPaste, .eisu, .kana, .toggleKana, .reconvert:
             return true
-        case .abbrev, .directAbbrev, .unregister, .backwardCandidate, .fixNextCandidate, .none:
+        case .abbrev, .directAbbrev, .unregister, .backwardCandidate, .fixNextCandidate, .fixPrevCandidate, .none:
             break
         }
 
@@ -1685,7 +1784,7 @@ final class StateMachine {
             return handle(action)
         case .registerPaste, .delete, .eisu, .kana, .reconvert:
             return true
-        case .toggleKana, .toggleAndFixKana, .direct, .toggleDirect, .zenkaku, .abbrev, .directAbbrev, .japanese, .fixNextCandidate:
+        case .toggleKana, .toggleAndFixKana, .direct, .toggleDirect, .zenkaku, .abbrev, .directAbbrev, .japanese, .fixNextCandidate, .fixPrevCandidate:
             break
         case nil:
             break
@@ -1817,8 +1916,8 @@ final class StateMachine {
     ///   - 状態がUnregister (ユーザー辞書から削除するか質問中)
     ///     - 空文字列で確定する
     @MainActor func commitComposition() {
-        // 入力中状態がなくても、確定のやり直しで遅らせていた登録は済ませておく
-        flushLastFixRegistration()
+        // 入力中状態がなくても、確定のやり直しの後始末はしておく
+        finishRedoFixedText()
         if state.specialState != nil {
             state.inputMethod = .normal
             state.specialState = nil
@@ -1886,7 +1985,11 @@ final class StateMachine {
     }
 
     /// 現在の変換候補選択状態をcandidateEventSubject.sendする
-    @MainActor private func updateCandidates(selecting: SelectingState?) {
+    ///
+    /// - Parameter inlineCandidateCount: 変換候補パネルを表示せずインライン表示する変換候補の数。
+    ///   nilのときはプロパティの値を使う。確定のやり直しのように常にパネルを表示したいときは0を渡す。
+    @MainActor private func updateCandidates(selecting: SelectingState?, inlineCandidateCount: Int? = nil) {
+        let inlineCandidateCount = inlineCandidateCount ?? self.inlineCandidateCount
         if let selecting {
             if selecting.candidateIndex < inlineCandidateCount {
                 candidateEventSubject.send(
@@ -1952,12 +2055,19 @@ final class StateMachine {
     }
 
     /// StateMachine外で選択されている変換候補が更新されたときに通知される
-    func didSelectCandidate(_ candidate: Candidate) {
+    @MainActor func didSelectCandidate(_ candidate: Candidate, textInput: (any IMKTextInput)? = nil) {
         if case .selecting(var selecting) = state.inputMethod {
             if let candidateIndex = selecting.candidates.firstIndex(of: candidate) {
                 selecting.candidateIndex = candidateIndex
                 state.inputMethod = .selecting(selecting)
                 updateMarkedText()
+            }
+        } else if let lastFix, lastFix.redoing, let textInput {
+            // 確定のやり直し中に変換候補パネルから選択された。
+            // 自分でパネルに反映したときも通知されるので、選択中の変換候補と同じときはなにもしない
+            if let candidateIndex = lastFix.selecting.candidates.firstIndex(of: candidate),
+               candidateIndex != lastFix.selecting.candidateIndex {
+                _ = redoFixedText(candidateIndex: candidateIndex, textInput: textInput)
             }
         }
     }
@@ -1969,6 +2079,9 @@ final class StateMachine {
             updateCandidates(selecting: nil)
             state.inputMethod = .normal
             addFixedText(candidate.word)
+        } else {
+            // 確定のやり直し中はすでにクライアントに書き込み済みなので、やり直しを終了するだけでよい
+            finishRedoFixedText()
         }
     }
 }
