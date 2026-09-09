@@ -171,7 +171,7 @@ class InputController: IMKInputController {
             }
         }.store(in: &cancellables)
         Global.candidatesPanel.viewModel.$selected.compactMap { $0 }.sink { [weak self] selected in
-            self?.stateMachine.didSelectCandidate(selected)
+            self?.stateMachine.didSelectCandidate(selected, textInput: textInput)
             // TODO: バックグラウンドで引いて表示のときだけフォアグラウンドで処理をさせたい
             // TODO: 一度引いた単語を二度引かないようにしたい
             self?.selectedWord.send(selected.word)

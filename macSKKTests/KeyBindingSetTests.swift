@@ -22,6 +22,27 @@ final class KeyBindingSetTests: XCTestCase {
         XCTAssertEqual(set.sorted.map { $0.1 }, [.enter, .left, .left, .hiragana, .direct, .japanese, .toggleKana, .unregister])
     }
 
+    /// Ctrl-zとCtrl-Shift-zが取り違えられないこと。
+    /// Ctrl-zのInputはoptionalModifierFlagsが空なのでShiftを押している間は受理しない
+    func testDefaultActionForFixCandidate() {
+        let set = KeyBindingSet.defaultKeyBindingSet
+        func action(modifierFlags: NSEvent.ModifierFlags) -> KeyBinding.Action? {
+            let event = NSEvent.keyEvent(with: .keyDown,
+                                         location: .zero,
+                                         modifierFlags: modifierFlags,
+                                         timestamp: 0,
+                                         windowNumber: 0,
+                                         context: nil,
+                                         characters: "z",
+                                         charactersIgnoringModifiers: "z",
+                                         isARepeat: false,
+                                         keyCode: 0x06)!
+            return set.action(event: event, inputMode: .hiragana, inputMethod: .normal)
+        }
+        XCTAssertEqual(action(modifierFlags: [.control]), .fixNextCandidate)
+        XCTAssertEqual(action(modifierFlags: [.control, .shift]), .fixPrevCandidate)
+    }
+
     func testUpdate() {
         let set = KeyBindingSet(id: "test", values: [
             KeyBinding(.toggleKana, [.init(key: .character("q"), modifierFlags: [])]),
