@@ -116,10 +116,19 @@ class InputController: IMKInputController {
                                                 replacementRange: Self.notFoundRange)
                     }
                     textInput.setMarkedText(NSAttributedString(attributedText), selectionRange: cursorRange, replacementRange: Self.notFoundRange)
+                case .undoFixedText(let markedText, let replacementRange):
+                    // 確定アンドゥ。すでにクライアントに送った確定文字列を未確定文字列で置き換える。
+                    // Chromiumベースのアプリやターミナルでは範囲指定が無視されてキャレット位置に置かれるため、
+                    // 送り元のStateMachineが書き込んだ位置を読み直して判定する。
+                    // markedTextのときと違い、変換候補を表示している状態なので未確定文字列が空になることはない
+                    textInput.setMarkedText(NSAttributedString(markedText.attributedString(Global.showMarkedTextMarker)),
+                                            selectionRange: markedText.cursorRange(Global.showMarkedTextMarker) ?? Self.notFoundRange,
+                                            replacementRange: replacementRange)
                 case .replaceFixedText(let text, let replacementRange):
-                    // 確定のやり直し。すでにクライアントに送った確定文字列を別の確定文字列で置き換える。
-                    // setMarkedTextのreplacementRangeやinsertTextの空文字列は無視される (macOS 26で実測) が、
-                    // 空でない文字列のinsertTextであれば範囲指定が効く。
+                    // 確定アンドゥのフォールバック。
+                    // すでにクライアントに送った確定文字列を別の確定文字列で置き換える。
+                    // insertTextに空文字列を渡すと範囲指定ごと無視される (macOS 26.6で確認) ので、
+                    // 消すのではなく別の確定文字列で置き換えている
                     textInput.insertText(text, replacementRange: replacementRange)
                 case .modeChanged(let inputMode):
                     // KittyやAlacrittyなど、q/lによるモード切り替えでq/lが入力されたり、C-jで改行が入力されるのを回避するワークアラウンド
