@@ -75,15 +75,12 @@ struct KeyBinding: Identifiable, Hashable {
         case registerPaste
         /// 選択した文字列を辞書から逆引きして再変換をする。デフォルトはCtrl-/キー
         case reconvert
-        /// 直前に確定した文字列を次の変換候補で置き換える。デフォルトはCtrl-zキー
+        /// 直前の確定を取り消して変換候補選択に戻る (確定アンドゥ)。デフォルトはCtrl-zキー
         ///
-        /// 確定した文字列がキャレットの直前にそのまま残っているときのみ有効。
-        /// 確定後に別の文字を入力したりカーソルを移動していた場合は何も起きない。
-        case fixNextCandidate
-        /// 直前に確定した文字列を前の変換候補で置き換える。デフォルトはCtrl-Shift-zキー
-        ///
-        /// 有効になる条件は ``fixNextCandidate`` と同じ。
-        case fixPrevCandidate
+        /// 確定した文字列がクライアントに残っているときのみ有効。
+        /// 確定済み文字列を未確定文字列で置き換えられないクライアントでは、
+        /// 代わりに次の変換候補で置き換えて変換候補パネルを表示する。
+        case kakuteiUndo
         /// 接頭辞・接尾辞の入力。デフォルトは ">" (Shift-.キー)
         case affix
         /// 英数キー
@@ -138,8 +135,8 @@ struct KeyBinding: Identifiable, Hashable {
                 } else {
                     return true
                 }
-            // 確定のやり直しはnormalかつ日本語入力モードのときのみ受理
-            case .fixNextCandidate, .fixPrevCandidate:
+            // 確定アンドゥはnormalかつ日本語入力モードのときのみ受理
+            case .kakuteiUndo:
                 guard case .normal = inputMethod else {
                     return false
                 }
@@ -361,18 +358,14 @@ struct KeyBinding: Identifiable, Hashable {
                 return KeyBinding(action, [Input(key: .character("y"), modifierFlags: .control)])
             case .reconvert:
                 return KeyBinding(action, [Input(key: .character("/"), modifierFlags: [.control])])
-            case .fixNextCandidate:
+            case .kakuteiUndo:
                 // Ctrl-zはmacOSの標準のキーバインド (AppKitのStandardKeyBinding.dict) でも
                 // macSKKの他の機能でも使われていない。
                 // mozc (Google日本語入力) の確定取り消しと同じCtrl-Backspaceも考えられるが、
-                // 置き換えられないときにターミナルで単語や一文字が削除されてしまうため採用しない。
+                // 取り消せないときにターミナルで単語や一文字が削除されてしまうため採用しない。
                 // Terminal.appとWezTermはCtrl-BackspaceをIMEに渡さず、
                 // KittyとGhosttyはIMEが処理してもターミナル側でも処理するため、macSKKからは防げない
                 return KeyBinding(action, [Input(key: .character("z"), modifierFlags: .control)])
-            case .fixPrevCandidate:
-                // Ctrl-zにShiftを足したもの。Ctrl-zのInputはoptionalModifierFlagsが空なので
-                // Shiftを押している間はfixNextCandidateとしては受理されない
-                return KeyBinding(action, [Input(key: .character("z"), modifierFlags: [.control, .shift])])
             case .affix:
                 return KeyBinding(action, [Input(key: .character("."), modifierFlags: .shift)])
             case .eisu:

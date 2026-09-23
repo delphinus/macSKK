@@ -7,26 +7,37 @@ import InputMethodKit
 /**
  * テスト用のIMKTextInput実装。クライアント (テキストを編集しているアプリ) を模倣する。
  *
- * 確定文字列だけを保持し、未確定文字列 (setMarkedText) は保持しない。
- * 現在のmacSKKは未確定文字列の位置指定を使っていないため、テストに必要なのは確定文字列の状態だけ。
+ * 未確定文字列も実際のクライアントと同じくテキストの一部として持つので、
+ * ``text`` には未確定文字列を含んだ文書全体が入る。
  */
 final class MockTextInput: NSObject, IMKTextInput {
-    /// クライアントが持っている確定済みのテキスト
+    /// クライアントが持っているテキスト。未確定文字列を含む
     private(set) var text: String
     /// キャレット位置 (UTF-16でのオフセット)。選択範囲は持たない
     private(set) var caret: Int
     /// insertTextのreplacementRangeを解釈するかどうか。
     /// falseのときはターミナルなど範囲指定に対応していないクライアントを模倣してキャレット位置に挿入する
     let supportsReplacementRange: Bool
+    /// setMarkedTextのreplacementRangeを解釈するかどうか。
+    /// falseのときはChromiumベースのアプリやターミナルを模倣してキャレット位置に未確定文字列を置く
+    let supportsMarkedTextReplacementRange: Bool
     /// selectedRangeでNSNotFoundを返すかどうか。カーソル位置を返さないクライアントを模倣する
     let supportsSelectedRange: Bool
-    /// setMarkedTextで渡された未確定文字列
-    private(set) var markedText: String = ""
+    /// 未確定文字列が占めている範囲。未確定文字列がないときはnil
+    private(set) var markedTextRange: NSRange?
+    /// 現在の未確定文字列
+    var markedText: String {
+        markedTextRange.map { (text as NSString).substring(with: $0) } ?? ""
+    }
 
-    init(text: String = "", supportsReplacementRange: Bool = true, supportsSelectedRange: Bool = true) {
+    init(text: String = "",
+         supportsReplacementRange: Bool = true,
+         supportsMarkedTextReplacementRange: Bool = true,
+         supportsSelectedRange: Bool = true) {
         self.text = text
         self.caret = (text as NSString).length
         self.supportsReplacementRange = supportsReplacementRange
+        self.supportsMarkedTextReplacementRange = supportsMarkedTextReplacementRange
         self.supportsSelectedRange = supportsSelectedRange
     }
 
@@ -38,17 +49,17 @@ final class MockTextInput: NSObject, IMKTextInput {
     // MARK: - IMKTextInput
     func insertText(_ string: Any!, replacementRange: NSRange) {
         let inserted = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
-        let mutable = NSMutableString(string: text)
         let range: NSRange
-        if supportsReplacementRange && replacementRange.location != NSNotFound {
+        if let markedTextRange {
+            // 未確定文字列があるときはそれを置き換えて確定する
+            range = markedTextRange
+        } else if supportsReplacementRange && replacementRange.location != NSNotFound {
             range = replacementRange
         } else {
             range = NSRange(location: caret, length: 0)
         }
-        mutable.replaceCharacters(in: range, with: inserted)
-        text = mutable as String
-        caret = range.location + (inserted as NSString).length
-        markedText = ""
+        replaceCharacters(in: range, with: inserted)
+        markedTextRange = nil
     }
 
     func insertText(_ string: Any!) {
@@ -56,7 +67,27 @@ final class MockTextInput: NSObject, IMKTextInput {
     }
 
     func setMarkedText(_ string: Any!, selectionRange: NSRange, replacementRange: NSRange) {
-        markedText = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        let inserted = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        let range: NSRange
+        if let markedTextRange {
+            // 未確定文字列があるときはそれを置き換える
+            range = markedTextRange
+        } else if supportsMarkedTextReplacementRange && replacementRange.location != NSNotFound {
+            range = replacementRange
+        } else {
+            range = NSRange(location: caret, length: 0)
+        }
+        replaceCharacters(in: range, with: inserted)
+        let length = (inserted as NSString).length
+        markedTextRange = length > 0 ? NSRange(location: range.location, length: length) : nil
+    }
+
+    /// テキストの一部を置き換えてキャレットを置き換えた文字列の直後に移す
+    private func replaceCharacters(in range: NSRange, with string: String) {
+        let mutable = NSMutableString(string: text)
+        mutable.replaceCharacters(in: range, with: string)
+        text = mutable as String
+        caret = range.location + (string as NSString).length
     }
 
     func selectedRange() -> NSRange {
@@ -68,7 +99,7 @@ final class MockTextInput: NSObject, IMKTextInput {
     }
 
     func markedRange() -> NSRange {
-        NSRange(location: NSNotFound, length: NSNotFound)
+        markedTextRange ?? NSRange(location: NSNotFound, length: NSNotFound)
     }
 
     func attributedSubstring(from range: NSRange) -> NSAttributedString! {

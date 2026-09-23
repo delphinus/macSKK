@@ -13,12 +13,18 @@ enum InputMethodEvent: Equatable {
     ///
     /// 登録モード時は "[登録：あああ]ほげ" のように長くなる
     case markedText(MarkedText)
-    /// すでにクライアントに送った確定文字列を別の確定文字列で置き換える。確定のやり直しで使う。
+    /// すでにクライアントに送った確定文字列を別の確定文字列で置き換える。確定アンドゥのフォールバックで使う。
     ///
     /// replacementRangeはクライアントのドキュメント先頭からの範囲。
     /// クライアントが範囲指定に対応していない場合は置き換わらずに追記されるため、
     /// 送ったあとに置き換えられたかを確認すること。
     case replaceFixedText(String, replacementRange: NSRange)
+    /// すでにクライアントに送った確定文字列を下線付きの未確定文字列で置き換える。確定アンドゥで使う。
+    ///
+    /// replacementRangeはクライアントのドキュメント先頭からの範囲。
+    /// Chromiumベースのアプリやターミナルのように範囲指定を無視するクライアントでは
+    /// キャレット位置に未確定文字列が置かれてしまうため、送ったあとに置けたかを確認すること。
+    case undoFixedText(MarkedText, replacementRange: NSRange)
     /// qやlなどにより入力モードを変更する
     case modeChanged(InputMode)
 }
@@ -63,7 +69,7 @@ final class StateMachine {
     /// 1文字で確定するローマ字やq/lなどのモード変更などで未確定文字列を一度表示するワークグラウンドが有効かどうか
     /// xterm.jsを利用しているVSCodeのターミナルやHyperなどaiueoで直接入力されてしまう環境向け
     var enableMarkedTextWorkaround: Bool
-    /// 直前に変換候補選択から確定した内容。確定のやり直し (``KeyBinding/Action/fixNextCandidate``) で使う。
+    /// 直前に変換候補選択から確定した内容。確定アンドゥ (``KeyBinding/Action/kakuteiUndo``) で使う。
     /// 確定以外の文字列をクライアントに送ったときはnilに戻す。
     private var lastFix: LastFix?
 
@@ -71,14 +77,15 @@ final class StateMachine {
     private struct LastFix {
         /// 確定したときの変換候補選択状態
         let selecting: SelectingState
-        /// クライアント上で確定文字列が始まる位置。確定した時点では不明なのでnil
+        /// クライアント上で確定文字列が始まる位置。
+        /// 確定した直後にキャレット位置から求める。取得できないクライアントではnil
         let location: Int?
         /// クライアントに送った確定文字列
         let text: String
-        /// 確定のやり直しで置き換える前にクライアントにあった文字列。
+        /// 次の変換候補で置き換える前にクライアントにあった文字列。
         /// クライアントによっては置き換えた直後の読み取りが古い文字列を返すため、その判定に使う
         let previousText: String?
-        /// 確定のやり直しの最中かどうか。
+        /// 次の変換候補での置き換えの最中かどうか。
         /// 変換候補パネルを表示していて、選択中の変換候補をまだユーザー辞書に登録していない状態。
         var redoing: Bool = false
     }
@@ -94,9 +101,9 @@ final class StateMachine {
 
     /// `Action`をハンドルした場合には`true`、しなかった場合は`false`を返す
     @MainActor func handle(_ action: Action) -> Bool {
-        if action.keyBind != .fixNextCandidate && action.keyBind != .fixPrevCandidate {
-            // 確定のやり直し中は変換候補パネルを表示しているので、変換候補選択と同じ操作も受け付ける。
-            // どちらでもないキーが押されたらやり直しは終わったものとみなす
+        if action.keyBind != .kakuteiUndo {
+            // 次の変換候補での置き換え中は変換候補パネルを表示しているので、変換候補選択と同じ操作も受け付ける。
+            // どちらでもないキーが押されたら置き換えは終わったものとみなす
             if handleRedoingFixedText(action) {
                 return true
             }
@@ -507,11 +514,11 @@ final class StateMachine {
                 }
             }
             return true
-        case .fixNextCandidate, .fixPrevCandidate:
-            if redoFixedText(action: action, diff: action.keyBind == .fixNextCandidate ? 1 : -1) {
+        case .kakuteiUndo:
+            if kakuteiUndo(action: action) {
                 return true
             }
-            // 置き換えられない場合の扱いは割り当てられたキーによって変える。
+            // 取り消せない場合の扱いは割り当てられたキーによって変える。
             // デフォルトのCtrl-zのような修飾キー付きのキーはアプリに渡さず、なにもせずに握り潰す。
             // Ctrl-BackspaceやCtrl-uのように、アプリに渡るとターミナルなどで直前の単語や
             // 行が削除されてしまうキーを割り当てられるため
@@ -563,14 +570,115 @@ final class StateMachine {
     }
 
     /**
+     * 直前の確定を取り消して変換候補選択に戻る (確定アンドゥ)。
+     *
+     * ddskkの確定アンドゥ (skk-undo-kakutei) と同じく、確定した文字列を未確定文字列 (▼) に戻す。
+     * 確定したときの変換候補が選択された状態で戻るので、そこからスペースで次の変換候補、
+     * 前候補キーを続ければ読み (▽) まで戻れる。辞書は引き直さないので、
+     * 確定時の学習で変換候補の順序が変わっていても戻したときの表示は確定前と同じになる。
+     *
+     * 確定した文字列がクライアントに残っているときのみ有効。後ろに続きを入力していてもよい。
+     *
+     * Chromiumベースのアプリやターミナルのように、確定済み文字列を未確定文字列で置き換えられない
+     * クライアントでは ``redoFixedText(action:diff:)`` に切り替えて、
+     * 確定した文字列を次の変換候補で置き換えて変換候補パネルを表示する。
+     *
+     * - Returns: 取り消した場合はtrue、取り消さなかった場合はfalse。
+     */
+    @MainActor private func kakuteiUndo(action: Action) -> Bool {
+        // 単語登録中の確定はクライアントに文字列を送っていないので対象外
+        guard state.specialState == nil, case .normal = state.inputMethod,
+              let lastFix, !lastFix.redoing, let textInput = action.textInput else {
+            // 次の変換候補での置き換えの最中は、そちらを続ける
+            return redoFixedText(action: action, diff: 1)
+        }
+        switch state.inputMode {
+        case .hiragana, .katakana, .hankaku:
+            break
+        case .direct, .eisu:
+            return false
+        }
+        let selectedRange = textInput.selectedRange()
+        // 選択範囲があるときは再変換 (reconvert) の対象なので確定アンドゥはしない
+        guard selectedRange.location != NSNotFound, selectedRange.length == 0 else {
+            return false
+        }
+        guard let range = fixedTextRange(lastFix: lastFix, caret: selectedRange.location, textInput: textInput) else {
+            return false
+        }
+        if undoToSelecting(selecting: lastFix.selecting, range: range, caret: selectedRange.location, textInput: textInput) {
+            return true
+        }
+        return redoFixedText(action: action, diff: 1)
+    }
+
+    /**
+     * クライアント上で ``LastFix/text`` が占めている範囲を返す。見つからないときはnilを返す。
+     *
+     * 確定した直後に覚えた位置を優先し、そこに無ければキャレットの直前を見る。
+     * 確定した位置より前を編集されていると覚えた位置はずれるが、その場合は何もしない
+     * (ddskkが確定した位置を追い続けられるのはEmacsのマーカーがあるからで、入力メソッドからは追えない)。
+     */
+    @MainActor private func fixedTextRange(lastFix: LastFix, caret: Int, textInput: any IMKTextInput) -> NSRange? {
+        let length = (lastFix.text as NSString).length
+        for location in [lastFix.location, caret - length] {
+            guard let location, location >= 0 else {
+                continue
+            }
+            let range = NSRange(location: location, length: length)
+            if textInput.attributedSubstring(from: range)?.string == lastFix.text {
+                return range
+            }
+        }
+        return nil
+    }
+
+    /**
+     * 確定済み文字列を未確定文字列で置き換えて変換候補選択の状態に戻す。
+     *
+     * 置き換えられたかどうかは書き込んだあとに読み直して判定する。
+     * 範囲指定を無視するクライアントではキャレット位置に未確定文字列が置かれてしまうが、
+     * 未確定文字列はまだ確定していないので、空文字列で置き換えれば文書は元のまま残る。
+     *
+     * - Parameter caret: 書き込む前のキャレット位置。
+     * - Returns: 置き換えられた場合はtrue。
+     */
+    @MainActor private func undoToSelecting(selecting: SelectingState, range: NSRange, caret: Int, textInput: any IMKTextInput) -> Bool {
+        let previousInputMethod = state.inputMethod
+        state.inputMethod = .selecting(selecting)
+        let markedText = state.displayText()
+        inputMethodEventSubject.send(.undoFixedText(markedText, replacementRange: range))
+        // InputControllerが未確定文字列を空にするワークアラウンドを行うのは未確定文字列がすべて空のときだけなので、
+        // 変換候補を表示している状態ではGlobal.showMarkedTextMarkerと同じになる
+        let expected = NSAttributedString(markedText.attributedString(Global.showMarkedTextMarker)).string
+        let expectedLength = (expected as NSString).length
+        func reads(_ location: Int) -> Bool {
+            guard location >= 0 else {
+                return false
+            }
+            return textInput.attributedSubstring(from: NSRange(location: location, length: expectedLength))?.string == expected
+        }
+        // 置きたかった位置に未確定文字列があり、かつキャレット位置に置かれていないことを確かめる。
+        // 未確定文字列がマーカー (▽▼) を含まない設定では確定済み文字列と同じ文字列になりうるので、
+        // 置きたかった位置を読むだけでは範囲指定が無視されたことに気付けない
+        guard reads(range.location), !reads(caret) else {
+            logger.debug("確定アンドゥ: クライアントが確定済み文字列を未確定文字列で置き換えられません")
+            state.inputMethod = previousInputMethod
+            // キャレット位置に置かれてしまった未確定文字列を消す。確定していないので文書は元のまま残る
+            inputMethodEventSubject.send(.markedText(MarkedText([])))
+            return false
+        }
+        lastFix = nil
+        updateCandidates(selecting: selecting)
+        return true
+    }
+
+    /**
      * 直前に変換候補選択から確定した文字列を、次 (もしくは前) の変換候補で置き換える。
      *
-     * ddskkの確定アンドゥ (skk-undo-kakutei) のように未確定文字列 (▼) の状態に戻すことはできない。
-     * macOSの入力メソッドからは確定済み文字列の範囲を指定して未確定文字列を置くことができず、
-     * setMarkedTextのreplacementRangeは無視されるため (macOS 26で実測)、
-     * 範囲指定が有効なinsertTextで確定済み文字列そのものを置き換えている。
+     * 確定済み文字列を未確定文字列で置き換えられないクライアントで、確定アンドゥの代わりに使う。
+     * 未確定文字列にならないので下線は出ないが、変換候補パネルは表示する。
      *
-     * 確定した直後 (確定した文字列がキャレットの直前に残っているとき) のみ有効。
      * 続けて押すとさらに次の変換候補に進み、最後まで行くと反対側の端の変換候補に戻る。
      *
      * - Parameter diff: 進める変換候補の数。次の変換候補なら1、前の変換候補なら-1。
@@ -1332,7 +1440,7 @@ final class StateMachine {
             }
         case .up, .down, .registerPaste, .eisu, .kana, .toggleKana, .reconvert:
             return true
-        case .abbrev, .directAbbrev, .unregister, .backwardCandidate, .fixNextCandidate, .fixPrevCandidate, .none:
+        case .abbrev, .directAbbrev, .unregister, .backwardCandidate, .kakuteiUndo, .none:
             break
         }
 
@@ -1621,11 +1729,22 @@ final class StateMachine {
             } else {
                 state.inputMethod = .normal
                 addFixedText(fixedText)
-                // 直前の確定の差し替えのために確定内容を覚えておく。
+                // 確定アンドゥのために確定内容を覚えておく。
                 // 単語登録中はクライアントに文字列を送らない (登録中の文字列に追加される) ので対象外。
                 // バックスペースで末尾を削って確定した場合は変換候補と確定文字列が一致しないので対象外。
                 if state.specialState == nil && !fixedText.isEmpty && !dropLast {
-                    lastFix = LastFix(selecting: selecting, location: nil, text: fixedText, previousText: nil)
+                    // 確定した文字列が始まる位置を覚えておく。
+                    // あとから読み取ってもキャレットが動いていると分からなくなるので、確定した直後に求める
+                    let location: Int?
+                    if let selectedRange = action.textInput?.selectedRange(), selectedRange.location != NSNotFound {
+                        let start = selectedRange.location - (fixedText as NSString).length
+                        location = start >= 0 ? start : nil
+                    } else {
+                        location = nil
+                    }
+                    lastFix = LastFix(selecting: selecting, location: location, text: fixedText, previousText: nil)
+                } else {
+                    lastFix = nil
                 }
                 if let prevMode = selecting.prev.composing.prevMode {
                     state.inputMode = prevMode
@@ -1784,7 +1903,7 @@ final class StateMachine {
             return handle(action)
         case .registerPaste, .delete, .eisu, .kana, .reconvert:
             return true
-        case .toggleKana, .toggleAndFixKana, .direct, .toggleDirect, .zenkaku, .abbrev, .directAbbrev, .japanese, .fixNextCandidate, .fixPrevCandidate:
+        case .toggleKana, .toggleAndFixKana, .direct, .toggleDirect, .zenkaku, .abbrev, .directAbbrev, .japanese, .kakuteiUndo:
             break
         case nil:
             break
@@ -1940,9 +2059,9 @@ final class StateMachine {
     }
 
     private func addFixedText(_ text: String) {
-        // 直前の確定の差し替えは変換候補選択から確定した直後のみ有効。
-        // 呼び出し元のfixCurrentSelectがこのメソッドを呼んだあとに設定し直す。
-        lastFix = nil
+        // 確定アンドゥは続きを入力したあとでも使えるようにしたいので、ここではlastFixを捨てない。
+        // 変換候補選択からの確定はfixCurrentSelectが設定し直す。
+        // 確定した文字列がクライアントに残っているかどうかは確定アンドゥの実行時に確かめる
         if let specialState = state.specialState {
             // state.markedTextを更新してinputMethodEventSubjectにstate.displayText()をsendする
             state.specialState = specialState.appendText(text)
