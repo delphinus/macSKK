@@ -120,9 +120,13 @@ class InputController: IMKInputController {
                     // 確定アンドゥ。すでにクライアントに送った確定文字列を未確定文字列で置き換える。
                     // Chromiumベースのアプリやターミナルでは範囲指定が無視されてキャレット位置に置かれるため、
                     // 送り元のStateMachineが書き込んだ位置を読み直して判定する。
-                    // markedTextのときと違い、変換候補を表示している状態なので未確定文字列が空になることはない
-                    textInput.setMarkedText(NSAttributedString(markedText.attributedString(Global.showMarkedTextMarker)),
-                                            selectionRange: markedText.cursorRange(Global.showMarkedTextMarker) ?? Self.notFoundRange,
+                    //
+                    // 判定に使うのでマーカー (▽▼) は利用者の設定によらず必ず表示する。
+                    // マーカーがないと確定済み文字列と同じ文字列になりうるので、
+                    // 書き込み後の読み取りに古い内容を返すクライアント (Chromiumベースのアプリ) で
+                    // 置けたかどうかを判別できない。置けた場合はStateMachineがこのあと設定どおりに表示し直す
+                    textInput.setMarkedText(NSAttributedString(markedText.attributedString(true)),
+                                            selectionRange: markedText.cursorRange(true) ?? Self.notFoundRange,
                                             replacementRange: replacementRange)
                 case .replaceFixedText(let text, let replacementRange):
                     // 確定アンドゥのフォールバック。
