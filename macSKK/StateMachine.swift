@@ -72,6 +72,9 @@ final class StateMachine {
     /// 直前に変換候補選択から確定した内容。確定アンドゥ (``KeyBinding/Action/kakuteiUndo``) で使う。
     /// 確定以外の文字列をクライアントに送ったときはnilに戻す。
     private var lastFix: LastFix?
+    /// クライアントが確定済み文字列を未確定文字列で置き換えられないことが分かっているかどうか。
+    /// StateMachineはクライアントごとに作られるので、一度分かったら以後は試さずにフォールバックする。
+    private var cannotUndoToMarkedText: Bool = false
 
     /// 直前に変換候補選択から確定した内容
     private struct LastFix {
@@ -580,7 +583,7 @@ final class StateMachine {
      * 確定した文字列がクライアントに残っているときのみ有効。後ろに続きを入力していてもよい。
      *
      * Chromiumベースのアプリやターミナルのように、確定済み文字列を未確定文字列で置き換えられない
-     * クライアントでは ``redoFixedText(action:diff:)`` に切り替えて、
+     * クライアントでは ``redoFixedText(action:diff:caret:)`` に切り替えて、
      * 確定した文字列を次の変換候補で置き換えて変換候補パネルを表示する。
      *
      * - Returns: 取り消した場合はtrue、取り消さなかった場合はfalse。
@@ -590,7 +593,7 @@ final class StateMachine {
         guard state.specialState == nil, case .normal = state.inputMethod,
               let lastFix, !lastFix.redoing, let textInput = action.textInput else {
             // 次の変換候補での置き換えの最中は、そちらを続ける
-            return redoFixedText(action: action, diff: 1)
+            return redoFixedText(action: action, diff: 1, caret: nil)
         }
         switch state.inputMode {
         case .hiragana, .katakana, .hankaku:
@@ -606,10 +609,15 @@ final class StateMachine {
         guard let range = fixedTextRange(lastFix: lastFix, caret: selectedRange.location, textInput: textInput) else {
             return false
         }
-        if undoToSelecting(selecting: lastFix.selecting, range: range, caret: selectedRange.location, textInput: textInput) {
-            return true
+        if !cannotUndoToMarkedText {
+            if undoToSelecting(selecting: lastFix.selecting, range: range, caret: selectedRange.location, textInput: textInput) {
+                return true
+            }
+            cannotUndoToMarkedText = true
         }
-        return redoFixedText(action: action, diff: 1)
+        // 未確定文字列を置いてから消したクライアントはキャレット位置の読み取りが変わってしまうことがあるので、
+        // 読み直さずにここで読んだ位置を渡す
+        return redoFixedText(action: action, diff: 1, caret: selectedRange.location)
     }
 
     /**
@@ -688,7 +696,7 @@ final class StateMachine {
      * - Parameter diff: 進める変換候補の数。次の変換候補なら1、前の変換候補なら-1。
      * - Returns: 置き換えた場合はtrue、置き換えなかった場合はfalse。
      */
-    @MainActor private func redoFixedText(action: Action, diff: Int) -> Bool {
+    @MainActor private func redoFixedText(action: Action, diff: Int, caret: Int?) -> Bool {
         // 単語登録中の確定はクライアントに文字列を送っていないので対象外
         guard state.specialState == nil, let lastFix, let textInput = action.textInput else {
             return false
@@ -706,7 +714,7 @@ final class StateMachine {
         }
         // 端まで行ったら反対側の端に戻る
         let candidateIndex = (lastFix.selecting.candidateIndex + diff % candidates.count + candidates.count) % candidates.count
-        return redoFixedText(candidateIndex: candidateIndex, textInput: textInput)
+        return redoFixedText(candidateIndex: candidateIndex, caret: caret, textInput: textInput)
     }
 
     /**
@@ -714,7 +722,7 @@ final class StateMachine {
      *
      * 置き換えた場合はtrue、置き換えなかった場合はfalseを返す。
      */
-    @MainActor private func redoFixedText(candidateIndex: Int, textInput: any IMKTextInput) -> Bool {
+    @MainActor private func redoFixedText(candidateIndex: Int, caret: Int?, textInput: any IMKTextInput) -> Bool {
         guard let lastFix else {
             return false
         }
@@ -723,7 +731,8 @@ final class StateMachine {
             return false
         }
         let fixedLength = (lastFix.text as NSString).length
-        let selectedRange = textInput.selectedRange()
+        // caretが渡されているときはクライアントに聞き直さない
+        let selectedRange = caret.map { NSRange(location: $0, length: 0) } ?? textInput.selectedRange()
         // 選択範囲があるときは再変換 (reconvert) の対象なので確定のやり直しはしない
         guard selectedRange.location != NSNotFound, selectedRange.length == 0 else {
             return false
@@ -851,13 +860,13 @@ final class StateMachine {
             }
             // 変換候補がない位置の選択用のキーは握り潰す
             if pageStart + index < count {
-                _ = redoFixedText(candidateIndex: pageStart + index, textInput: textInput)
+                _ = redoFixedText(candidateIndex: pageStart + index, caret: nil, textInput: textInput)
                 // 選択用のキーは変換候補選択中と同じく決定として扱う
                 finishRedoFixedText()
             }
             return true
         }
-        if !redoFixedText(candidateIndex: candidateIndex, textInput: textInput) {
+        if !redoFixedText(candidateIndex: candidateIndex, caret: nil, textInput: textInput) {
             // 置き換えられなくなったらやり直しを終える
             finishRedoFixedText()
         }
@@ -2190,7 +2199,7 @@ final class StateMachine {
             // 自分でパネルに反映したときも通知されるので、選択中の変換候補と同じときはなにもしない
             if let candidateIndex = lastFix.selecting.candidates.firstIndex(of: candidate),
                candidateIndex != lastFix.selecting.candidateIndex {
-                _ = redoFixedText(candidateIndex: candidateIndex, textInput: textInput)
+                _ = redoFixedText(candidateIndex: candidateIndex, caret: nil, textInput: textInput)
             }
         }
     }
