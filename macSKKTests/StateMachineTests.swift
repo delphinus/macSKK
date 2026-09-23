@@ -4599,6 +4599,47 @@ final class StateMachineTests: XCTestCase {
                        "選び直した変換候補が学習される")
     }
 
+    @MainActor func testKakuteiUndoWithoutMarkedTextMarker() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都")]])
+        Global.showMarkedTextMarker = false
+        defer { Global.showMarkedTextMarker = true }
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction.with(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸")
+        XCTAssertTrue(stateMachine.handle(kakuteiUndoAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "戸", "判定のために表示したマーカーは設定どおりに消す")
+        XCTAssertEqual(textInput.markedText, "戸", "確定した文字列が未確定文字列に戻っている")
+        if case .selecting = stateMachine.state.inputMethod {} else {
+            XCTFail("変換候補選択に戻ること")
+        }
+    }
+
+    /// マーカーを表示しない設定では未確定文字列が確定済み文字列と同じ文字列になるため、
+    /// 判定用の書き込みにマーカーを付けていないと置けたと誤判定してしまう
+    @MainActor func testKakuteiUndoWithoutMarkedTextMarkerNotReplaceable() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都")]])
+        Global.showMarkedTextMarker = false
+        defer { Global.showMarkedTextMarker = true }
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        // Chromiumベースのアプリのように未確定文字列を範囲指定で置けないクライアント
+        let textInput = MockTextInput(supportsMarkedTextReplacementRange: false)
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        XCTAssertTrue(stateMachine.handle(enterAction.with(textInput: textInput)))
+        XCTAssertTrue(stateMachine.handle(kakuteiUndoAction(textInput: textInput)))
+        XCTAssertEqual(textInput.markedText, "", "キャレット位置に置かれてしまった未確定文字列は残さない")
+        XCTAssertEqual(textInput.text, "都", "次の変換候補での置き換えにフォールバックする")
+    }
+
     @MainActor func testKakuteiUndoBackToComposing() {
         Global.dictionary.setEntries(["と": [Word("戸"), Word("都")]])
 
@@ -5073,7 +5114,8 @@ final class StateMachineTests: XCTestCase {
                                         selectionRange: notFoundRange,
                                         replacementRange: notFoundRange)
             case .undoFixedText(let markedText, let replacementRange):
-                textInput.setMarkedText(Self.string(of: markedText),
+                // InputControllerは判定のためにマーカーを必ず表示して書き込む
+                textInput.setMarkedText(NSAttributedString(markedText.attributedString(true)).string,
                                         selectionRange: notFoundRange,
                                         replacementRange: replacementRange)
             case .modeChanged:

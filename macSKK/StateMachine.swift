@@ -648,9 +648,8 @@ final class StateMachine {
         state.inputMethod = .selecting(selecting)
         let markedText = state.displayText()
         inputMethodEventSubject.send(.undoFixedText(markedText, replacementRange: range))
-        // InputControllerが未確定文字列を空にするワークアラウンドを行うのは未確定文字列がすべて空のときだけなので、
-        // 変換候補を表示している状態ではGlobal.showMarkedTextMarkerと同じになる
-        let expected = NSAttributedString(markedText.attributedString(Global.showMarkedTextMarker)).string
+        // InputControllerは判定のためにマーカー (▽▼) を必ず表示して書き込む
+        let expected = NSAttributedString(markedText.attributedString(true)).string
         let expectedLength = (expected as NSString).length
         func reads(_ location: Int) -> Bool {
             guard location >= 0 else {
@@ -667,6 +666,11 @@ final class StateMachine {
             // キャレット位置に置かれてしまった未確定文字列を消す。確定していないので文書は元のまま残る
             inputMethodEventSubject.send(.markedText(MarkedText([])))
             return false
+        }
+        if !Global.showMarkedTextMarker {
+            // 判定のために表示したマーカーを設定どおりに消す。
+            // 範囲を指定しない書き込みは置けたクライアントなら未確定文字列をその場で置き換える
+            updateMarkedText()
         }
         lastFix = nil
         updateCandidates(selecting: selecting)
