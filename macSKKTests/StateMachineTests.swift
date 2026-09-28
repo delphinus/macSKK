@@ -7,7 +7,11 @@ import XCTest
 @testable import macSKK
 
 final class StateMachineTests: XCTestCase {
+    /// 確定のやり直しのテストはStateMachineTestContextを使わずに直接イベントを購読するので、その購読を持っておく
+    var cancellables: Set<AnyCancellable> = []
+
     override func setUp() async throws {
+        cancellables = []
         await MainActor.run {
             Global.dictionary.setEntries([:])
             Global.privateMode.send(false)
