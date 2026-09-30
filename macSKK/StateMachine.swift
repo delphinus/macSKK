@@ -578,7 +578,7 @@ final class StateMachine {
      * 確定した文字列をクライアントに送った直後に呼ぶこと。
      * 単語登録中はクライアントに文字列を送らない (登録中の文字列に追加される) ので対象外。
      *
-     * - Parameter selecting: 確定したときの変換候補選択状態。
+     * - Parameter selecting: 確定したときの変換候補選択状態。補完候補から確定したときは組み立てて渡す。
      */
     @MainActor private func rememberLastFix(selecting: SelectingState, textInput: (any IMKTextInput)?) {
         let fixedText = selecting.fixedText(dropLast: false)
@@ -1032,11 +1032,25 @@ final class StateMachine {
             return true
         } else if let input, !event.modifierFlags.contains(.control) {
             if case .candidates(let candidateWords) = completion, let candidate = candidateWords.first, let original = candidate.original {
+                /// 補完候補から確定したときに確定アンドゥで戻る変換候補選択状態。Tabキーで補完候補を選択したときと同じ状態にする
+                func completionSelecting(candidateIndex: Int) -> SelectingState {
+                    let trimmedComposing = composing.trim(kanaRule: Global.kanaRule)
+                    return SelectingState(
+                        prev: SelectingState.PrevState(mode: state.inputMode, composing: trimmedComposing),
+                        yomi: trimmedComposing.yomi(for: state.inputMode, kanaRule: Global.kanaRule),
+                        candidates: candidateWords,
+                        candidateIndex: candidateIndex,
+                        remain: nil,
+                        completion: true,
+                    )
+                }
                 // 補完候補が変換候補であり、fixedCompletionByPeriodが有効で、ピリオドキーが入力された場合先頭の補完候補で確定する
                 if input == "." && !event.modifierFlags.contains(.shift) && Global.fixedCompletionByPeriod {
+                    let selecting = completionSelecting(candidateIndex: 0)
                     addWordToUserDict(yomi: original.midashi,  okuri: nil, candidate: candidate)
                     state.inputMethod = .normal
                     addFixedText(candidate.word)
+                    rememberLastFix(selecting: selecting, textInput: action.textInput)
                     return true
                 }
                 // 補完候補が表示されてから一定時間経過後に確定キーが押された場合は補完候補で確定する
@@ -1045,12 +1059,14 @@ final class StateMachine {
                    let first = input.lowercased().first,
                    let index = Global.selectCandidateKeys.firstIndex(of: first), index < candidateWords.count, index < Global.displayCandidateCount {
                     let candidate = candidateWords[index]
+                    let selecting = completionSelecting(candidateIndex: index)
                     if let original = candidate.original {
                         addWordToUserDict(yomi: original.midashi, okuri: nil, candidate: candidate)
                     }
                     completion = nil
                     state.inputMethod = .normal
                     addFixedText(candidate.word)
+                    rememberLastFix(selecting: selecting, textInput: action.textInput)
                     return true
                 }
             }
@@ -2093,7 +2109,7 @@ final class StateMachine {
 
     private func addFixedText(_ text: String) {
         // 確定アンドゥは続きを入力したあとでも使えるようにしたいので、ここではlastFixを捨てない。
-        // 変換候補選択からの確定はfixCurrentSelectが設定し直す。
+        // 変換候補選択や補完候補から確定したときはrememberLastFixで設定し直す。
         // 確定した文字列がクライアントに残っているかどうかは確定アンドゥの実行時に確かめる
         if let specialState = state.specialState {
             // state.markedTextを更新してinputMethodEventSubjectにstate.displayText()をsendする
@@ -2225,12 +2241,19 @@ final class StateMachine {
     }
 
     /// StateMachine外で選択されている変換候補が二回選択されたときに通知される
-    @MainActor func didDoubleSelectCandidate(_ candidate: Candidate) {
+    @MainActor func didDoubleSelectCandidate(_ candidate: Candidate, textInput: (any IMKTextInput)? = nil) {
         if case .selecting(let selecting) = state.inputMethod {
             addWordToUserDict(yomi: selecting.yomi, okuri: selecting.okuri, candidate: candidate)
             updateCandidates(selecting: nil)
             state.inputMethod = .normal
             addFixedText(candidate.word)
+            if let candidateIndex = selecting.candidates.firstIndex(of: candidate) {
+                var selecting = selecting
+                selecting.candidateIndex = candidateIndex
+                rememberLastFix(selecting: selecting, textInput: textInput)
+            } else {
+                lastFix = nil
+            }
         } else {
             // 確定のやり直し中はすでにクライアントに書き込み済みなので、やり直しを終了するだけでよい
             finishRedoFixedText()

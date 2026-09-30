@@ -190,7 +190,7 @@ class InputController: IMKInputController {
             self?.selectedWord.send(selected.word)
         }.store(in: &cancellables)
         Global.candidatesPanel.viewModel.$doubleSelected.compactMap { $0 }.sink { [weak self] doubleSelected in
-            self?.stateMachine.didDoubleSelectCandidate(doubleSelected)
+            self?.stateMachine.didDoubleSelectCandidate(doubleSelected, textInput: textInput)
         }.store(in: &cancellables)
         selectedWord.removeDuplicates().compactMap({ $0 }).sink { [weak self] word in
             if UserDefaults.app.bool(forKey: UserDefaultsKeys.showAnnotation) {

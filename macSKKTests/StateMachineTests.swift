@@ -2946,6 +2946,65 @@ final class StateMachineTests: XCTestCase {
         }
     }
 
+    @MainActor func testKakuteiUndoFromCompletionByPeriod() {
+        let fixedCompletionByPeriod = Global.fixedCompletionByPeriod
+        Global.fixedCompletionByPeriod = true
+        defer { Global.fixedCompletionByPeriod = fixedCompletionByPeriod }
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "a", withShift: true)))
+        stateMachine.completion = .candidates([
+            Candidate("朝", original: Candidate.Original(midashi: "あさ", word: "朝")),
+            Candidate("麻", original: Candidate.Original(midashi: "あさ", word: "麻")),
+        ])
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: ".", textInput: textInput)))
+        XCTAssertEqual(textInput.text, "朝")
+        XCTAssertTrue(stateMachine.handle(kakuteiUndoAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "▼朝", "ピリオドキーで補完候補から確定した文字列も未確定文字列に戻る")
+        if case .selecting(let selecting) = stateMachine.state.inputMethod {
+            XCTAssertTrue(selecting.completion, "Tabキーで補完候補を選択したときと同じ状態に戻る")
+        } else {
+            XCTFail("変換候補選択に戻ること")
+        }
+        XCTAssertTrue(stateMachine.handle(tabAction.with(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "▼麻", "Tabキーで次の補完候補に進む")
+        XCTAssertTrue(stateMachine.handle(cancelAction.with(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "▽あ", "キャンセルすると補完する前の読みに戻る")
+    }
+
+    @MainActor func testKakuteiUndoFromCompletionBySelectCandidateKey() {
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "a", withShift: true)))
+        stateMachine.completion = .candidates([
+            Candidate("朝", original: Candidate.Original(midashi: "あさ", word: "朝")),
+            Candidate("麻", original: Candidate.Original(midashi: "あさ", word: "麻")),
+        ])
+        stateMachine.completionSetAt = Date(timeIntervalSinceNow: -(Global.completionConfirmationTimeLimit + 0.1))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "2", textInput: textInput)))
+        XCTAssertEqual(textInput.text, "麻")
+        XCTAssertTrue(stateMachine.handle(kakuteiUndoAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "▼麻", "選択用のキーで補完候補から確定した文字列も未確定文字列に戻る")
+    }
+
+    @MainActor func testKakuteiUndoFromDoubleSelectCandidate() {
+        Global.dictionary.setEntries(["と": [Word("戸"), Word("都"), Word("徒")]])
+
+        let stateMachine = StateMachine(initialState: IMEState(inputMode: .hiragana))
+        let textInput = MockTextInput()
+        connect(stateMachine, to: textInput)
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "t", withShift: true)))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: "o")))
+        XCTAssertTrue(stateMachine.handle(printableKeyEventAction(character: " ")))
+        stateMachine.didDoubleSelectCandidate(Candidate("都"), textInput: textInput)
+        XCTAssertEqual(textInput.text, "都")
+        XCTAssertTrue(stateMachine.handle(kakuteiUndoAction(textInput: textInput)))
+        XCTAssertEqual(textInput.text, "▼都", "変換候補パネルのダブルクリックで確定した文字列も未確定文字列に戻る")
+    }
+
     @MainActor func testKakuteiUndoKeepsDocumentWhenNotReplaceable() {
         Global.dictionary.setEntries(["と": [Word("戸"), Word("都")]])
 
