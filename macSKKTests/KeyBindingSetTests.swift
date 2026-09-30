@@ -22,6 +22,27 @@ final class KeyBindingSetTests: XCTestCase {
         XCTAssertEqual(set.sorted.map { $0.1 }, [.enter, .left, .left, .hiragana, .direct, .japanese, .toggleKana, .unregister])
     }
 
+    /// 確定アンドゥのCtrl-zがShiftを押している間は受理されないこと。
+    /// Ctrl-zのInputはoptionalModifierFlagsが空なので他のキーと取り違えられない
+    func testDefaultActionForKakuteiUndo() {
+        let set = KeyBindingSet.defaultKeyBindingSet
+        func action(modifierFlags: NSEvent.ModifierFlags) -> KeyBinding.Action? {
+            let event = NSEvent.keyEvent(with: .keyDown,
+                                         location: .zero,
+                                         modifierFlags: modifierFlags,
+                                         timestamp: 0,
+                                         windowNumber: 0,
+                                         context: nil,
+                                         characters: "z",
+                                         charactersIgnoringModifiers: "z",
+                                         isARepeat: false,
+                                         keyCode: 0x06)!
+            return set.action(event: event, inputMode: .hiragana, inputMethod: .normal)
+        }
+        XCTAssertEqual(action(modifierFlags: [.control]), .kakuteiUndo)
+        XCTAssertNil(action(modifierFlags: [.control, .shift]))
+    }
+
     func testUpdate() {
         let set = KeyBindingSet(id: "test", values: [
             KeyBinding(.toggleKana, [.init(key: .character("q"), modifierFlags: [])]),
