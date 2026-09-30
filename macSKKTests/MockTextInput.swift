@@ -25,6 +25,9 @@ final class MockTextInput: NSObject, IMKTextInput {
     let supportsSelectedRange: Bool
     /// 未確定文字列が占めている範囲。未確定文字列がないときはnil
     private(set) var markedTextRange: NSRange?
+    /// selectedRangeで実際のキャレット位置の代わりに返す位置。
+    /// 範囲指定を無視するクライアントが、指定された範囲の先頭をキャレットとして報告し続けるのを模倣する
+    private var pinnedCaret: Int?
     /// 現在の未確定文字列
     var markedText: String {
         markedTextRange.map { (text as NSString).substring(with: $0) } ?? ""
@@ -44,6 +47,7 @@ final class MockTextInput: NSObject, IMKTextInput {
     /// カーソルを移動する。確定直後でない状態を作るために使う
     func moveCaret(to location: Int) {
         caret = location
+        pinnedCaret = nil
     }
 
     // MARK: - IMKTextInput
@@ -60,6 +64,7 @@ final class MockTextInput: NSObject, IMKTextInput {
         }
         replaceCharacters(in: range, with: inserted)
         markedTextRange = nil
+        pinnedCaret = nil
     }
 
     func insertText(_ string: Any!) {
@@ -80,6 +85,13 @@ final class MockTextInput: NSObject, IMKTextInput {
         replaceCharacters(in: range, with: inserted)
         let length = (inserted as NSString).length
         markedTextRange = length > 0 ? NSRange(location: range.location, length: length) : nil
+        if !supportsMarkedTextReplacementRange && replacementRange.location != NSNotFound {
+            // Slackで実際に起きる挙動の再現。
+            // 範囲指定を無視して未確定文字列をキャレット位置に置くのに、
+            // キャレットは指定された範囲の先頭として報告するようになる。
+            // 未確定文字列を消しても報告は元に戻らない
+            pinnedCaret = replacementRange.location
+        }
     }
 
     /// テキストの一部を置き換えてキャレットを置き換えた文字列の直後に移す
@@ -92,7 +104,7 @@ final class MockTextInput: NSObject, IMKTextInput {
 
     func selectedRange() -> NSRange {
         if supportsSelectedRange {
-            return NSRange(location: caret, length: 0)
+            return NSRange(location: pinnedCaret ?? caret, length: 0)
         } else {
             return NSRange(location: NSNotFound, length: NSNotFound)
         }

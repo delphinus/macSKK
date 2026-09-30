@@ -128,6 +128,12 @@ class InputController: IMKInputController {
                     textInput.setMarkedText(NSAttributedString(markedText.attributedString(true)),
                                             selectionRange: markedText.cursorRange(true) ?? Self.notFoundRange,
                                             replacementRange: replacementRange)
+                case .replaceFixedText(let text, let replacementRange):
+                    // 確定アンドゥのフォールバック。
+                    // すでにクライアントに送った確定文字列を別の確定文字列で置き換える。
+                    // insertTextに空文字列を渡すと範囲指定ごと無視される (macOS 26.6で確認) ので、
+                    // 消すのではなく別の確定文字列で置き換えている
+                    textInput.insertText(text, replacementRange: replacementRange)
                 case .modeChanged(let inputMode):
                     // KittyやAlacrittyなど、q/lによるモード切り替えでq/lが入力されたり、C-jで改行が入力されるのを回避するワークアラウンド
                     // AquaSKKの空文字列挿入を参考にしています。
@@ -178,7 +184,7 @@ class InputController: IMKInputController {
             }
         }.store(in: &cancellables)
         Global.candidatesPanel.viewModel.$selected.compactMap { $0 }.sink { [weak self] selected in
-            self?.stateMachine.didSelectCandidate(selected)
+            self?.stateMachine.didSelectCandidate(selected, textInput: textInput)
             // TODO: バックグラウンドで引いて表示のときだけフォアグラウンドで処理をさせたい
             // TODO: 一度引いた単語を二度引かないようにしたい
             self?.selectedWord.send(selected.word)
