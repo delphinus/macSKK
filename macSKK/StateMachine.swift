@@ -695,17 +695,15 @@ final class StateMachine {
         // 置きたかった位置に未確定文字列があり、かつキャレット位置に置かれていないことを確かめる。
         // 未確定文字列がマーカー (▽▼) を含まない設定では確定済み文字列と同じ文字列になりうるので、
         // 置きたかった位置を読むだけでは範囲指定が無視されたことに気付けない
-        guard reads(range.location), !reads(caret) else {
-            logger.debug("確定アンドゥ: クライアントが確定済み文字列を未確定文字列で置き換えられません")
-            state.inputMethod = previousInputMethod
-            // キャレット位置に置かれてしまった未確定文字列を消す。確定していないので文書は元のまま残る
-            inputMethodEventSubject.send(.markedText(MarkedText([])))
-            return false
-        }
-        if !Global.showMarkedTextMarker {
-            // 判定のために表示したマーカーを設定どおりに消す。
-            // 範囲を指定しない書き込みは置けたクライアントなら未確定文字列をその場で置き換える
-            updateMarkedText()
+        // EXP: Chromiumはキー処理中のsetMarkedTextをキー処理の最後にまとめて送るので、
+        // 同じキー処理の中では読み直さず、範囲指定なしのsetMarkedTextも呼ばない
+        _ = previousInputMethod
+        logger.log("EXP 確定アンドゥ: 書き込み直後 置きたい位置=\(reads(range.location), privacy: .public) キャレット位置=\(reads(caret), privacy: .public) range=(\(range.location, privacy: .public),\(range.length, privacy: .public)) caret=\(caret, privacy: .public) bundle=\(textInput.bundleIdentifier() ?? "nil", privacy: .public)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let selected = textInput.selectedRange()
+            let marked = textInput.markedRange()
+            let around = textInput.attributedSubstring(from: NSRange(location: max(0, range.location - 2), length: expectedLength + 4))?.string ?? "nil"
+            logger.log("EXP 確定アンドゥ: 0.3秒後 置きたい位置=\(reads(range.location), privacy: .public) キャレット位置=\(reads(caret), privacy: .public) selected=(\(selected.location, privacy: .public),\(selected.length, privacy: .public)) marked=(\(marked.location, privacy: .public),\(marked.length, privacy: .public)) 周辺=\(around, privacy: .public)")
         }
         lastFix = nil
         updateCandidates(selecting: selecting)
