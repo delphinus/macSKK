@@ -69,6 +69,8 @@ final class StateMachine {
     /// 1文字で確定するローマ字やq/lなどのモード変更などで未確定文字列を一度表示するワークグラウンドが有効かどうか
     /// xterm.jsを利用しているVSCodeのターミナルやHyperなどaiueoで直接入力されてしまう環境向け
     var enableMarkedTextWorkaround: Bool
+    /// EXP: 確定アンドゥで変換候補パネルを出さない
+    var expSkipCandidatePanel = false
     /// 直前に変換候補選択から確定した内容。確定アンドゥ (``KeyBinding/Action/kakuteiUndo``) で使う。
     /// 確定したあとに続きを入力しても捨てない (``addFixedText(_:)`` を参照)。
     private var lastFix: LastFix?
@@ -706,7 +708,11 @@ final class StateMachine {
             logger.log("EXP 確定アンドゥ: 0.3秒後 置きたい位置=\(reads(range.location), privacy: .public) キャレット位置=\(reads(caret), privacy: .public) selected=(\(selected.location, privacy: .public),\(selected.length, privacy: .public)) marked=(\(marked.location, privacy: .public),\(marked.length, privacy: .public)) 周辺=\(around, privacy: .public)")
         }
         lastFix = nil
-        updateCandidates(selecting: selecting)
+        if expSkipCandidatePanel {
+            logger.log("EXP 確定アンドゥ: 変換候補パネルを出さない")
+        } else {
+            updateCandidates(selecting: selecting)
+        }
         return true
     }
 
@@ -2223,7 +2229,11 @@ final class StateMachine {
     /// StateMachine外で選択されている変換候補が更新されたときに通知される
     @MainActor func didSelectCandidate(_ candidate: Candidate, textInput: (any IMKTextInput)? = nil) {
         if case .selecting(var selecting) = state.inputMethod {
-            if let candidateIndex = selecting.candidates.firstIndex(of: candidate) {
+            // 自分でパネルに反映したときも通知されるので、選択中の変換候補と同じときはなにもしない。
+            // ChromiumのWebコンテンツはキー処理中のsetMarkedTextのうち最後の1回しか反映しないので、
+            // 確定アンドゥで範囲を指定して書き込んだ直後に範囲なしで書き込むと範囲指定が失われる
+            if let candidateIndex = selecting.candidates.firstIndex(of: candidate),
+               candidateIndex != selecting.candidateIndex {
                 selecting.candidateIndex = candidateIndex
                 state.inputMethod = .selecting(selecting)
                 updateMarkedText()

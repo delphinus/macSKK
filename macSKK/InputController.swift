@@ -74,6 +74,7 @@ class InputController: IMKInputController {
         guard let textInput = inputClient as? any IMKTextInput else {
             return
         }
+        expInitClient = textInput
         if let bundleIdentifier = textInput.bundleIdentifier() {
             targetApp = TargetApplication(bundleIdentifier: bundleIdentifier, localizedName: nil)
             for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier) {
@@ -125,8 +126,11 @@ class InputController: IMKInputController {
                     // マーカーがないと確定済み文字列と同じ文字列になりうるので、
                     // 書き込み後の読み取りに古い内容を返すクライアント (ChromiumのWebコンテンツ) で
                     // 置けたかどうかを判別できない。置けた場合はStateMachineがこのあと設定どおりに表示し直す
-                    textInput.setMarkedText(NSAttributedString(markedText.attributedString(true)),
-                                            selectionRange: markedText.cursorRange(true) ?? Self.notFoundRange,
+                    let expString = NSAttributedString(markedText.attributedString(true))
+                    let expSelection = markedText.cursorRange(true) ?? Self.notFoundRange
+                    logger.log("EXP undoFixedText: setMarkedText(\"\(expString.string, privacy: .public)\", selectionRange: \(expRange(expSelection), privacy: .public), replacementRange: \(expRange(replacementRange), privacy: .public)) elements=\(String(describing: markedText.elements), privacy: .public) attrs=\(String(describing: expString), privacy: .public)")
+                    textInput.setMarkedText(expString,
+                                            selectionRange: expSelection,
                                             replacementRange: replacementRange)
                 case .replaceFixedText(let text, let replacementRange):
                     // 確定アンドゥのフォールバック。
@@ -273,7 +277,54 @@ class InputController: IMKInputController {
     }
 
     /// キーイベントを処理して、入力を横取りしたかどうかを返す。
+    /// EXP: 初期化時に受け取ったクライアント
+    private var expInitClient: (any IMKTextInput)?
+
     private func handle(event: NSEvent, textInput: (any IMKTextInput)?) -> Bool {
+        if let textInput, let initClient = expInitClient {
+            let current = self.client() as AnyObject?
+            logger.log("EXP client: sender=\(String(describing: ObjectIdentifier(textInput as AnyObject)), privacy: .public) \(String(describing: type(of: textInput as AnyObject)), privacy: .public) init=\(String(describing: ObjectIdentifier(initClient as AnyObject)), privacy: .public) client()=\(String(describing: current.map { ObjectIdentifier($0) }), privacy: .public) 同一=\((textInput as AnyObject) === (initClient as AnyObject), privacy: .public)")
+            let mods = event.modifierFlags.intersection([.control, .option, .command, .shift])
+            let key = event.charactersIgnoringModifiers?.lowercased()
+            // ⌃⌥U: 本物の確定アンドゥを⌃⌥のキーで動かす
+            if mods == [.control, .option], key == "u" {
+                logger.log("EXP ⌃⌥U: 変換候補パネルなしで確定アンドゥを実行")
+                stateMachine.expSkipCandidatePanel = true
+                defer { stateMachine.expSkipCandidatePanel = false }
+                return stateMachine.handle(Action(keyBind: .kakuteiUndo, event: event, textInput: textInput))
+            }
+            // ⌃⌥Q: Jのあと、確定アンドゥの判定と同じ読み直しをする
+            if mods == [.control, .option], key == "q" {
+                let caret = textInput.selectedRange().location
+                _ = AdaptorExperiment.variant("j", textInput: textInput)
+                let a = textInput.attributedSubstring(from: NSRange(location: caret - 4, length: 3))?.string ?? "nil"
+                let b = textInput.attributedSubstring(from: NSRange(location: caret, length: 3))?.string ?? "nil"
+                logger.log("EXP ⌃⌥Q: 読み直し 置きたい位置=\(a, privacy: .public) キャレット位置=\(b, privacy: .public)")
+                return true
+            }
+            // ⌃⌥X: Jのあと、変換候補パネルの位置決めと同じ問い合わせをする
+            if mods == [.control, .option], key == "x" {
+                _ = AdaptorExperiment.variant("j", textInput: textInput)
+                var rect: NSRect = .zero
+                _ = textInput.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
+                let level = textInput.windowLevel()
+                logger.log("EXP ⌃⌥X: rect=\(String(describing: rect), privacy: .public) level=\(level, privacy: .public)")
+                return true
+            }
+            // ⌃⇧J: Jと同じ呼び出しを⌃⇧のキーで動かす
+            if mods == [.control, .shift], key == "j" {
+                logger.log("EXP ⌃⇧J")
+                return AdaptorExperiment.variant("j", textInput: textInput)
+            }
+            // ⌃⌥L: Jと同じ呼び出しを初期化時のクライアントで行う
+            if event.modifierFlags.intersection([.control, .option, .command]) == [.control, .option],
+               event.charactersIgnoringModifiers?.lowercased() == "l" {
+                return AdaptorExperiment.variant("j", textInput: initClient, readFrom: textInput)
+            }
+        }
+        if AdaptorExperiment.handle(event: event, textInput: textInput) {
+            return true
+        }
         let keyBind = Global.keyBinding.action(event: event, inputMode: stateMachine.state.inputMode, inputMethod: stateMachine.state.inputMethod)
         if directMode {
             if let keyBind, keyBind == .kana || keyBind == .eisu {
@@ -516,5 +567,167 @@ class InputController: IMKInputController {
     /// 変換候補パネルや補完候補などを表示するべきウィンドウレベル。
     private func windowLevel(for textInput: any IMKTextInput) -> NSWindow.Level {
         NSWindow.Level(rawValue: Int(textInput.windowLevel() + 1))
+    }
+}
+
+// MARK: - EXP: 標準IMEが使うIMKTextDocumentTextInputAdaptorがクライアントに何を呼ぶかを記録する (pushしない)
+
+private func expRange(_ r: NSRange) -> String {
+    r.location == NSNotFound ? "(NotFound,\(r.length))" : "(\(r.location),\(r.length))"
+}
+
+private func expString(_ s: Any?) -> String {
+    if let a = s as? NSAttributedString { return "\"\(a.string)\"" }
+    if let s = s as? String { return "\"\(s)\"" }
+    return String(describing: s)
+}
+
+/// 受けた呼び出しをすべてログに出してから本物のクライアントに渡す
+final class ExpLoggingTextInput: NSObject, IMKTextInput {
+    let base: any IMKTextInput
+    init(base: any IMKTextInput) { self.base = base }
+    private func log(_ message: String) { logger.log("EXP adaptor→client: \(message, privacy: .public)") }
+
+    func insertText(_ string: Any!, replacementRange: NSRange) {
+        log("insertText(\(expString(string)), replacementRange: \(expRange(replacementRange)))")
+        base.insertText(string, replacementRange: replacementRange)
+    }
+    func setMarkedText(_ string: Any!, selectionRange: NSRange, replacementRange: NSRange) {
+        log("setMarkedText(\(expString(string)), selectionRange: \(expRange(selectionRange)), replacementRange: \(expRange(replacementRange)))")
+        base.setMarkedText(string, selectionRange: selectionRange, replacementRange: replacementRange)
+    }
+    func selectedRange() -> NSRange { let r = base.selectedRange(); log("selectedRange() -> \(expRange(r))"); return r }
+    func markedRange() -> NSRange { let r = base.markedRange(); log("markedRange() -> \(expRange(r))"); return r }
+    func attributedSubstring(from range: NSRange) -> NSAttributedString! {
+        let r = base.attributedSubstring(from: range); log("attributedSubstring(\(expRange(range))) -> \(expString(r))"); return r
+    }
+    func length() -> Int { let r = base.length(); log("length() -> \(r)"); return r }
+    func characterIndex(for point: NSPoint, tracking: IMKLocationToOffsetMappingMode, inMarkedRange: UnsafeMutablePointer<ObjCBool>!) -> Int {
+        log("characterIndex(for:)"); return base.characterIndex(for: point, tracking: tracking, inMarkedRange: inMarkedRange)
+    }
+    func attributes(forCharacterIndex index: Int, lineHeightRectangle lineRect: UnsafeMutablePointer<NSRect>!) -> [AnyHashable: Any]! {
+        log("attributes(forCharacterIndex: \(index))"); return base.attributes(forCharacterIndex: index, lineHeightRectangle: lineRect)
+    }
+    func validAttributesForMarkedText() -> [Any]! { log("validAttributesForMarkedText()"); return base.validAttributesForMarkedText() }
+    func overrideKeyboard(withKeyboardNamed keyboardUniqueName: String!) { log("overrideKeyboard"); base.overrideKeyboard(withKeyboardNamed: keyboardUniqueName) }
+    func selectMode(_ modeIdentifier: String!) { log("selectMode(\(modeIdentifier ?? "nil"))"); base.selectMode(modeIdentifier) }
+    func supportsUnicode() -> Bool { let r = base.supportsUnicode(); log("supportsUnicode() -> \(r)"); return r }
+    func bundleIdentifier() -> String! { let r = base.bundleIdentifier(); log("bundleIdentifier() -> \(r ?? "nil")"); return r }
+    func windowLevel() -> CGWindowLevel { log("windowLevel()"); return base.windowLevel() }
+    func supportsProperty(_ property: TSMDocumentPropertyTag) -> Bool {
+        let r = base.supportsProperty(property)
+        let tag = String(bytes: withUnsafeBytes(of: property.bigEndian) { Array($0) }, encoding: .ascii) ?? "\(property)"
+        log("supportsProperty('\(tag)') -> \(r)"); return r
+    }
+    func uniqueClientIdentifierString() -> String! { log("uniqueClientIdentifierString()"); return base.uniqueClientIdentifierString() }
+    func string(from range: NSRange, actualRange: NSRangePointer!) -> String! {
+        let r = base.string(from: range, actualRange: actualRange); log("string(from: \(expRange(range))) -> \(expString(r))"); return r
+    }
+    func firstRect(forCharacterRange aRange: NSRange, actualRange: NSRangePointer!) -> NSRect {
+        log("firstRect(\(expRange(aRange)))"); return base.firstRect(forCharacterRange: aRange, actualRange: actualRange)
+    }
+    override func responds(to aSelector: Selector!) -> Bool {
+        let r = super.responds(to: aSelector)
+        if !r { log("respondsToSelector(\(NSStringFromSelector(aSelector))) -> false") }
+        return r
+    }
+}
+
+enum AdaptorExperiment {
+    /// ⌃⌥R: キャレットの前の2文字をrecomposeする。⌃⌥M: キャレットを2文字戻す。
+    @MainActor static func handle(event: NSEvent, textInput: (any IMKTextInput)?) -> Bool {
+        guard let textInput, event.modifierFlags.intersection([.control, .option, .command]) == [.control, .option],
+              let ch = event.charactersIgnoringModifiers?.lowercased() else {
+            return false
+        }
+        if ["a", "s", "d", "f", "g", "h", "j", "k"].contains(ch) {
+            return variant(ch, textInput: textInput)
+        }
+        guard ch == "r" else {
+            return false
+        }
+        guard let cls = NSClassFromString("IMKTextDocumentTextInputAdaptor") as? NSObject.Type else {
+            logger.log("EXP adaptor: クラスが見つからない")
+            return true
+        }
+        let wrapper = ExpLoggingTextInput(base: textInput)
+        let allocated = cls.perform(NSSelectorFromString("alloc"))!.takeUnretainedValue()
+        typealias InitFn = @convention(c) (AnyObject, Selector, AnyObject) -> Unmanaged<AnyObject>
+        let initSel = NSSelectorFromString("initWithTextInputToAdapt:")
+        let doc = unsafeBitCast(allocated.method(for: initSel), to: InitFn.self)(allocated, initSel, wrapper).takeRetainedValue()
+        typealias VoidFn = @convention(c) (AnyObject, Selector) -> Void
+        func call(_ name: String) {
+            let sel = NSSelectorFromString(name)
+            logger.log("EXP adaptor: [\(name, privacy: .public)] 開始")
+            unsafeBitCast(doc.method(for: sel), to: VoidFn.self)(doc, sel)
+        }
+        logger.log("EXP adaptor: ===== \(ch, privacy: .public) 開始 bundle=\(textInput.bundleIdentifier() ?? "nil", privacy: .public)")
+        call("beginEdit")
+        if ch == "r" {
+            typealias RecomposeFn = @convention(c) (AnyObject, Selector, UInt, Int) -> Unmanaged<AnyObject>?
+            let sel = NSSelectorFromString("recomposeCharacters:before:")
+            logger.log("EXP adaptor: [recomposeCharacters:2 before:0] 開始")
+            let result = unsafeBitCast(doc.method(for: sel), to: RecomposeFn.self)(doc, sel, 2, 0)?.takeUnretainedValue()
+            logger.log("EXP adaptor: recompose -> \(String(describing: result), privacy: .public)")
+        } else {
+            typealias MoveFn = @convention(c) (AnyObject, Selector, Int) -> UInt
+            let sel = NSSelectorFromString("moveCursorByCharacterCount:")
+            logger.log("EXP adaptor: [moveCursorByCharacterCount:-2] 開始")
+            let result = unsafeBitCast(doc.method(for: sel), to: MoveFn.self)(doc, sel, -2)
+            logger.log("EXP adaptor: move -> \(result, privacy: .public)")
+        }
+        call("endEdit")
+        call("commitChanges")
+        logger.log("EXP adaptor: ===== 終了")
+        return true
+    }
+
+    /// キャレットの前の2文字を、条件を1つずつ変えたsetMarkedTextで未確定文字列にする
+    /// - A: 素の文字列・同じ内容・selectionRangeあり (標準IMEの部品と同じ)
+    /// - S: 素の文字列・同じ内容・selectionRangeがNotFound
+    /// - D: 素の文字列・▼付き・selectionRangeあり
+    /// - F: 属性付き・▼付き・selectionRangeあり
+    /// - G: 属性付き・▼付き・selectionRangeがNotFound (いまの確定アンドゥと同じ)
+    @MainActor static func variant(_ ch: String, textInput: any IMKTextInput, readFrom: (any IMKTextInput)? = nil) -> Bool {
+        let reader = readFrom ?? textInput
+        let caret = reader.selectedRange()
+        guard caret.location != NSNotFound, caret.location >= 2 else {
+            logger.log("EXP variant \(ch, privacy: .public): キャレットが不正 \(expRange(caret), privacy: .public)")
+            return true
+        }
+        // H・J・K はキャレットから離れた範囲 (「各停する|」の「各停」) を対象にする
+        let far = ["h", "j", "k"].contains(ch)
+        guard !far || caret.location >= 4 else {
+            logger.log("EXP variant \(ch, privacy: .public): キャレットが不正 \(expRange(caret), privacy: .public)")
+            return true
+        }
+        let range = far ? NSRange(location: caret.location - 4, length: 2) : NSRange(location: caret.location - 2, length: 2)
+        let t = reader.attributedSubstring(from: range)?.string ?? "??"
+        let notFound = NSRange(location: NSNotFound, length: NSNotFound)
+        let marked = MarkedText([.markerSelect, .emphasized(t)])
+        let attributed = NSAttributedString(marked.attributedString(true))
+        let string: Any
+        let selection: NSRange
+        switch ch {
+        case "a": string = t as NSString; selection = NSRange(location: 2, length: 0)
+        case "s": string = t as NSString; selection = notFound
+        case "d": string = ("▼" + t) as NSString; selection = NSRange(location: 3, length: 0)
+        case "f": string = attributed; selection = NSRange(location: 3, length: 0)
+        // H: Aと同じ渡し方で離れた範囲。J: Gと同じ渡し方で離れた範囲。
+        case "h": string = t as NSString; selection = NSRange(location: 2, length: 0)
+        case "j": string = attributed; selection = notFound
+        // K: 離れた範囲の代わりに、その範囲からキャレットまでをまとめて置き換える (「▼各停」+「する」)
+        case "k":
+            let rest = textInput.attributedSubstring(from: NSRange(location: caret.location - 2, length: 2))?.string ?? "??"
+            let m = MarkedText([.markerSelect, .emphasized(t), .cursor, .plain(rest)])
+            logger.log("EXP variant k: bundle=\(textInput.bundleIdentifier() ?? "nil", privacy: .public) setMarkedText(\(NSAttributedString(m.attributedString(true)).string, privacy: .public), selectionRange: \(expRange(m.cursorRange(true) ?? notFound), privacy: .public), replacementRange: \(expRange(NSRange(location: range.location, length: 4)), privacy: .public))")
+            textInput.setMarkedText(NSAttributedString(m.attributedString(true)), selectionRange: m.cursorRange(true) ?? notFound,
+                                    replacementRange: NSRange(location: range.location, length: 4))
+            return true
+        default: string = attributed; selection = notFound
+        }
+        logger.log("EXP variant \(ch, privacy: .public): bundle=\(textInput.bundleIdentifier() ?? "nil", privacy: .public) setMarkedText(\(expString(string), privacy: .public), selectionRange: \(expRange(selection), privacy: .public), replacementRange: \(expRange(range), privacy: .public))")
+        textInput.setMarkedText(string, selectionRange: selection, replacementRange: range)
+        return true
     }
 }
