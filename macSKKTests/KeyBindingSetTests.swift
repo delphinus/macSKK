@@ -22,25 +22,27 @@ final class KeyBindingSetTests: XCTestCase {
         XCTAssertEqual(set.sorted.map { $0.1 }, [.enter, .left, .left, .hiragana, .direct, .japanese, .toggleKana, .unregister])
     }
 
-    /// 確定アンドゥのCtrl-zがShiftを押している間は受理されないこと。
-    /// Ctrl-zのInputはoptionalModifierFlagsが空なので他のキーと取り違えられない
+    /// 確定アンドゥのCtrl-Shift-rがCtrl-rやShift-rと取り違えられないこと。
+    /// Ctrl-Shift-rのInputはoptionalModifierFlagsが空なのでShiftの有無を区別する
     func testDefaultActionForKakuteiUndo() {
         let set = KeyBindingSet.defaultKeyBindingSet
         func action(modifierFlags: NSEvent.ModifierFlags) -> KeyBinding.Action? {
+            let character = modifierFlags.contains(.shift) ? "R" : "r"
             let event = NSEvent.keyEvent(with: .keyDown,
                                          location: .zero,
                                          modifierFlags: modifierFlags,
                                          timestamp: 0,
                                          windowNumber: 0,
                                          context: nil,
-                                         characters: "z",
-                                         charactersIgnoringModifiers: "z",
+                                         characters: character,
+                                         charactersIgnoringModifiers: character,
                                          isARepeat: false,
-                                         keyCode: 0x06)!
+                                         keyCode: 0x0f)!
             return set.action(event: event, inputMode: .hiragana, inputMethod: .normal)
         }
-        XCTAssertEqual(action(modifierFlags: [.control]), .kakuteiUndo)
-        XCTAssertNil(action(modifierFlags: [.control, .shift]))
+        XCTAssertEqual(action(modifierFlags: [.control, .shift]), .kakuteiUndo)
+        XCTAssertNotEqual(action(modifierFlags: [.control]), .kakuteiUndo)
+        XCTAssertNotEqual(action(modifierFlags: [.shift]), .kakuteiUndo)
     }
 
     func testUpdate() {

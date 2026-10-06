@@ -3437,10 +3437,10 @@ final class StateMachineTests: XCTestCase {
         NSAttributedString(markedText.attributedString(Global.showMarkedTextMarker)).string
     }
 
-    // Ctrl-zを押した (デフォルトのキー割り当て。normalのときは確定アンドゥ)
+    // Ctrl-Shift-rを押した (デフォルトのキー割り当て。normalのときは確定アンドゥ)
     private func kakuteiUndoAction(textInput: MockTextInput) -> Action {
         Action(keyBind: .kakuteiUndo,
-               event: generateNSEvent(character: "z", characterIgnoringModifiers: "z", modifierFlags: [.control]),
+               event: generateNSEvent(character: "\u{12}", characterIgnoringModifiers: "R", modifierFlags: [.control, .shift]),
                textInput: textInput)
     }
 

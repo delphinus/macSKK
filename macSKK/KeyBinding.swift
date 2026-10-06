@@ -75,7 +75,7 @@ struct KeyBinding: Identifiable, Hashable {
         case registerPaste
         /// 選択した文字列を辞書から逆引きして再変換をする。デフォルトはCtrl-/キー
         case reconvert
-        /// 直前の確定を取り消して変換候補選択に戻る (確定アンドゥ)。デフォルトはCtrl-zキー
+        /// 直前の確定を取り消して変換候補選択に戻る (確定アンドゥ)。デフォルトはCtrl-Shift-rキー
         ///
         /// 確定した文字列がクライアントに残っているときのみ有効。
         /// 確定済み文字列を未確定文字列で置き換えられないクライアントでは、
@@ -359,13 +359,13 @@ struct KeyBinding: Identifiable, Hashable {
             case .reconvert:
                 return KeyBinding(action, [Input(key: .character("/"), modifierFlags: [.control])])
             case .kakuteiUndo:
-                // Ctrl-zはmacOSの標準のキーバインド (AppKitのStandardKeyBinding.dict) でも
-                // macSKKの他の機能でも使われていない。
+                // macOS標準の日本語入力の再変換 (変換済みのテキストの候補を表示する) と同じCtrl-Shift-r。
+                // Ctrl-zはターミナルでジョブの一時停止に使われるため採用しない。
                 // mozc (Google日本語入力) の確定取り消しと同じCtrl-Backspaceも考えられるが、
                 // 取り消せないときにターミナルで単語や一文字が削除されてしまうため採用しない。
                 // Terminal.appとWezTermはCtrl-BackspaceをIMEに渡さず、
                 // KittyとGhosttyはIMEが処理してもターミナル側でも処理するため、macSKKからは防げない
-                return KeyBinding(action, [Input(key: .character("z"), modifierFlags: .control)])
+                return KeyBinding(action, [Input(key: .character("r"), modifierFlags: [.control, .shift])])
             case .affix:
                 return KeyBinding(action, [Input(key: .character("."), modifierFlags: .shift)])
             case .eisu:
